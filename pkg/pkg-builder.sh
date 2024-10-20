@@ -10,7 +10,6 @@ readonly GPG_PRIVATE_KEY="${3:-${GPG_PRIVATE_KEY}}"
 readonly PKGBUILD_REPO_URL="https://github.com/shani8dev/shani-pkgbuilds.git"
 readonly PUBLIC_REPO_URL="git@github.com:shani8dev/shani-repo.git"
 readonly BASE_LOGFILE="build_process.log"  # Initialize base log file
-readonly LOGFILE="build_process.log"
 
 # Check essential environment variables
 for var in SSH_PRIVATE_KEY GPG_PASSPHRASE GPG_PRIVATE_KEY; do
@@ -25,10 +24,10 @@ readonly ARCH=$(uname -m)
 
 case "$ARCH" in
     x86_64)
-        ARCH_DIR="x86_64"
+        ARCH_DIR="public-repo/x86_64"
         ;;
     armv7l|aarch64)
-        ARCH_DIR="arm"
+        ARCH_DIR="public-repo/arm"
         ;;
     *)
         echo "Unsupported architecture: $ARCH"
@@ -41,28 +40,28 @@ log() {
     local log_file="$1"
     local message="$2"
     local timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-    echo "$timestamp - $message" | tee -a "$log_file"
+    echo "$timestamp - $message" | sudo tee -a "$log_file"
 }
 
 # Function to install Docker if not already installed
 install_docker() {
     if ! command -v docker &> /dev/null; then
-        log "$LOGFILE" "Docker not found, installing..."
+        log "$BASE_LOGFILE" "Docker not found, installing..."
         if [ -f /etc/os-release ]; then
             . /etc/os-release
             case "$ID" in
                 ubuntu|debian) sudo apt-get update && sudo apt-get install -y docker.io ;;
                 arch) sudo pacman -S --noconfirm docker ;;
                 fedora|centos|rhel) sudo dnf install -y docker ;;
-                *) log "$LOGFILE" "Error: Unsupported OS for Docker installation."; exit 1 ;;
+                *) log "$BASE_LOGFILE" "Error: Unsupported OS for Docker installation."; exit 1 ;;
             esac
-            log "$LOGFILE" "Docker installed successfully."
+            log "$BASE_LOGFILE" "Docker installed successfully."
         else
-            log "$LOGFILE" "Error: Unknown OS, cannot install Docker."
+            log "$BASE_LOGFILE" "Error: Unknown OS, cannot install Docker."
             exit 1
         fi
     else
-        log "$LOGFILE" "Docker is already installed."
+        log "$BASE_LOGFILE" "Docker is already installed."
     fi
 }
 
@@ -98,18 +97,50 @@ clone_or_update_repo() {
     fi
 }
 
-# Function to remove older versions of a package
+# Function to remove older versions of a package, keeping the current version
 remove_old_versions() {
     local pkgname="$1"
     local ARCH_DIR="$2"
-    
-    for pkg in "$ARCH_DIR/$pkgname"-*.pkg.tar.zst; do
-        if [[ "$pkg" == *"$pkgname"* ]]; then
-            log "$BASE_LOGFILE" "Removing older package: $pkg"
-            rm -f "$pkg"
-        fi
-    done
+    local current_pkgver="$3"
+    local current_pkgrel="$4"
+
+    # Find all package files and signatures matching the package name
+    local pkg_files=("$ARCH_DIR/$pkgname"-*.pkg.tar.zst)
+    local sig_files=("$ARCH_DIR/$pkgname"-*.pkg.tar.zst.sig)
+
+    # Check if any package files were found
+    if [[ ${#pkg_files[@]} -gt 0 ]]; then
+        for pkg in "${pkg_files[@]}"; do
+            # Extract pkgver and pkgrel from the filename
+            [[ "$pkg" =~ $pkgname-([0-9]+)-([0-9]+).* ]] || continue
+            local pkgver="${BASH_REMATCH[1]}"
+            local pkgrel="${BASH_REMATCH[2]}"
+
+            # Remove package if it's not the current version
+            if [[ "$pkgver" != "$current_pkgver" || "$pkgrel" != "$current_pkgrel" ]]; then
+                echo "Removing older package: $pkg"
+                rm -f "$pkg"
+            fi
+        done
+    fi
+
+    # Check if any signature files were found
+    if [[ ${#sig_files[@]} -gt 0 ]]; then
+        for sig in "${sig_files[@]}"; do
+            # Extract pkgver and pkgrel from the filename
+            [[ "$sig" =~ $pkgname-([0-9]+)-([0-9]+).*\.sig$ ]] || continue
+            local pkgver="${BASH_REMATCH[1]}"
+            local pkgrel="${BASH_REMATCH[2]}"
+
+            # Remove signature if it's not the current version
+            if [[ "$pkgver" != "$current_pkgver" || "$pkgrel" != "$current_pkgrel" ]]; then
+                echo "Removing older signature: $sig"
+                rm -f "$sig"
+            fi
+        done
+    fi
 }
+
 
 # Function to build packages
 build_package() {
@@ -126,8 +157,8 @@ build_package() {
         return
     fi
 
-    # Remove older versions of the package
-    remove_old_versions "$pkgname" "$ARCH_DIR"
+    # Remove older versions while keeping the current version
+    remove_old_versions "$pkgname" "$ARCH_DIR" "$pkgver" "$pkgrel"
 
     log "$package_log_file" "Building new package: $pkgname version $pkgver"
     # Change ownership of PKGBUILD_DIR before running Docker
@@ -154,13 +185,13 @@ build_package() {
 
     # Move the built package and signature to the public repo
     if [ -f "$PKGBUILD_DIR/$PKG_FILE" ]; then
-        sudo mv "$PKGBUILD_DIR/$PKG_FILE" "public-repo/$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $PKG_FILE."
+        sudo mv "$PKGBUILD_DIR/$PKG_FILE" "$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $PKG_FILE."
     else
         log "$BASE_LOGFILE" "Warning: Package file not found."
     fi
 
     if [ -f "$PKGBUILD_DIR/$PKG_SIG" ]; then
-        sudo mv "$PKGBUILD_DIR/$PKG_SIG" "public-repo/$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $PKG_SIG."
+        sudo mv "$PKGBUILD_DIR/$PKG_SIG" "$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $PKG_SIG."
     else
         log "$BASE_LOGFILE" "Warning: Signature file not found."
     fi
@@ -172,8 +203,8 @@ build_package() {
 # Function to update the repository database
 update_repo_database() {
     log "$BASE_LOGFILE" "Updating package repository database..."
-    sudo docker run --rm -v "$(pwd)/public-repo:/repo" -e ARCH_DIR="$ARCH_DIR" archlinux/archlinux:base-devel /bin/bash -c "
-      cd /repo/$ARCH_DIR || { echo 'Failed to change directory'; exit 1; }
+    sudo docker run --rm -v "$(pwd)/$ARCH_DIR:/repo" archlinux/archlinux:base-devel /bin/bash -c "
+      cd /repo || { echo 'Failed to change directory'; exit 1; }
       rm -f shani.db* shani.files*
       repo-add shani.db.tar.gz *.pkg.tar.zst
     "

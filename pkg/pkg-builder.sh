@@ -130,6 +130,8 @@ build_package() {
     remove_old_versions "$pkgname" "$ARCH_DIR"
 
     log "$package_log_file" "Building new package: $pkgname version $pkgver"
+    # Change ownership of PKGBUILD_DIR before running Docker
+    sudo chown -R "$(whoami):$(whoami)" "$PKGBUILD_DIR"
     echo "$GPG_PRIVATE_KEY" > gpg-private.key
     sudo docker run --rm \
         -v "$(pwd):/pkg" \

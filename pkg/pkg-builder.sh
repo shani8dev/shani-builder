@@ -3,14 +3,14 @@
 set -euo pipefail  # Exit on error and treat unset variables as errors
 
 # Configuration variables
-# Configuration variables
-readonly LOGFILE="build_process.log"
-readonly SSH_PRIVATE_KEY="${1:-}"
-readonly GPG_PASSPHRASE="${2:-}"
-readonly GPG_PRIVATE_KEY="${3:-}"
+
+readonly SSH_PRIVATE_KEY="${1:-${SSH_PRIVATE_KEY}}"
+readonly GPG_PASSPHRASE="${2:-${GPG_PASSPHRASE}}"
+readonly GPG_PRIVATE_KEY="${3:-${GPG_PRIVATE_KEY}}"
 readonly PKGBUILD_REPO_URL="https://github.com/shani8dev/shani-pkgbuilds.git"
 readonly PUBLIC_REPO_URL="git@github.com:shani8dev/shani-repo.git"
 readonly BASE_LOGFILE="build_process.log"  # Initialize base log file
+readonly LOGFILE="build_process.log"
 
 # Check essential environment variables
 for var in SSH_PRIVATE_KEY GPG_PASSPHRASE GPG_PRIVATE_KEY; do
@@ -25,10 +25,10 @@ readonly ARCH=$(uname -m)
 
 case "$ARCH" in
     x86_64)
-        readonly ARCH_DIR="public-repo/x86_64"
+        ARCH_DIR="x86_64"
         ;;
     armv7l|aarch64)
-        readonly ARCH_DIR="public-repo/arm"
+        ARCH_DIR="arm"
         ;;
     *)
         echo "Unsupported architecture: $ARCH"
@@ -130,24 +130,22 @@ build_package() {
     remove_old_versions "$pkgname" "$ARCH_DIR"
 
     log "$package_log_file" "Building new package: $pkgname version $pkgver"
-
+    echo "$GPG_PRIVATE_KEY" > gpg-private.key
     sudo docker run --rm \
         -v "$(pwd):/pkg" \
+        -v "$(pwd)/gpg-private.key:/home/builduser/.gnupg/temp-private.asc" \
         -e PKGBUILD_DIR="$(basename "$PKGBUILD_DIR")" \
-        -e PASSPHRASE="$PASSPHRASE" \
-        -e GPG_PRIVATE_KEY="$GPG_PRIVATE_KEY" \
+        -e GPG_PASSPHRASE="$GPG_PASSPHRASE" \
         -e PKG_FILE="$PKG_FILE" \
         archlinux/archlinux:base-devel bash -c "
         useradd -m builduser || true
         mkdir -p /home/builduser/.gnupg
         chown -R builduser:builduser /home/builduser/.gnupg
         su - builduser -c \"
-            echo \"$GPG_PRIVATE_KEY\" | gpg --batch --import-options import-show --dearmor > /home/builduser/.gnupg/temp-private.asc
-            echo \"$PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo 'GPG private key import failed'; exit 1; }
+            echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo 'GPG private key import failed'; exit 1; }
             cd /pkg/$PKGBUILD_DIR || { echo 'Failed to change directory'; exit 1; }
             makepkg -sc --noconfirm || { echo 'Package build failed'; exit 1; }
-            echo \"$PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"${PKG_FILE}.sig\" --sign \"${PKG_FILE}\" || { echo 'Signing failed for ${PKG_FILE}'; exit 1; }
-            rm -f /home/builduser/.gnupg/temp-private.asc
+            echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"${PKG_FILE}.sig\" --sign \"${PKG_FILE}\" || { echo 'Signing failed for ${PKG_FILE}'; exit 1; }
         \"
     "
 
@@ -171,7 +169,7 @@ build_package() {
 # Function to update the repository database
 update_repo_database() {
     log "$BASE_LOGFILE" "Updating package repository database..."
-    sudo docker run --rm -v "$(pwd)/public-repo:/repo" archlinux/archlinux:base-devel /bin/bash -c "
+    sudo docker run --rm -v "$(pwd)/public-repo:/repo" -e ARCH_DIR="$ARCH_DIR" archlinux/archlinux:base-devel /bin/bash -c "
       cd /repo/$ARCH_DIR || { echo 'Failed to change directory'; exit 1; }
       rm -f shani.db* shani.files*
       repo-add shani.db.tar.gz *.pkg.tar.zst

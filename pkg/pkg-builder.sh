@@ -141,6 +141,7 @@ build_package() {
         useradd -m builduser || true
         mkdir -p /home/builduser/.gnupg
         chown -R builduser:builduser /home/builduser/.gnupg
+        chown -R builduser:builduser /pkg  # Change ownership of the /pkg directory
         su - builduser -c \"
             echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo 'GPG private key import failed'; exit 1; }
             cd /pkg/$PKGBUILD_DIR || { echo 'Failed to change directory'; exit 1; }

@@ -2,13 +2,12 @@
 
 set -euo pipefail  # Exit on error and treat unset variables as errors
 
-# Load environment variables from .env file
-if [ -f .env ]; then
-    export $(grep -v '^#' .env | xargs)
-fi
-
 # Configuration variables
-readonly SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}"
+# Configuration variables
+readonly LOGFILE="build_process.log"
+readonly SSH_PRIVATE_KEY="${1:-}"
+readonly GPG_PASSPHRASE="${2:-}"
+readonly GPG_PRIVATE_KEY="${3:-}"
 readonly PKGBUILD_REPO_URL="https://github.com/shani8dev/shani-pkgbuilds.git"
 readonly PUBLIC_REPO_URL="git@github.com:shani8dev/shani-repo.git"
 readonly BASE_LOGFILE="build_process.log"  # Initialize base log file
@@ -36,10 +35,6 @@ case "$ARCH" in
         exit 1
         ;;
 esac
-
-readonly LOGFILE="build_process.log"
-readonly PASSPHRASE="${GPG_PASSPHRASE}"
-readonly GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}"
 
 # Logging function
 log() {

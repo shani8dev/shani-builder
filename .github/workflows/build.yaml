@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: '0 0 * * *'  # Runs every day at midnight UTC
 
 jobs:
   build:
-    runs-on: ubuntu
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository

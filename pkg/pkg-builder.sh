@@ -154,13 +154,13 @@ build_package() {
 
     # Move the built package and signature to the public repo
     if [ -f "$PKGBUILD_DIR/$PKG_FILE" ]; then
-        mv "$PKGBUILD_DIR/$PKG_FILE" "public-repo/$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $PKG_FILE."
+        sudo mv "$PKGBUILD_DIR/$PKG_FILE" "public-repo/$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $PKG_FILE."
     else
         log "$BASE_LOGFILE" "Warning: Package file not found."
     fi
 
     if [ -f "$PKGBUILD_DIR/$PKG_SIG" ]; then
-        mv "$PKGBUILD_DIR/$PKG_SIG" "public-repo/$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $PKG_SIG."
+        sudo mv "$PKGBUILD_DIR/$PKG_SIG" "public-repo/$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $PKG_SIG."
     else
         log "$BASE_LOGFILE" "Warning: Signature file not found."
     fi

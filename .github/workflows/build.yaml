@@ -4,12 +4,10 @@ on:
   push:
     branches:
       - main
-  schedule:
-    - cron: '0 0 * * *'  # Runs every day at midnight UTC
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu
 
     steps:
       - name: Checkout repository
@@ -23,7 +21,7 @@ jobs:
 
       - name: Download build script
         run: |
-          curl -L -o pkg-builder.sh https://raw.githubusercontent.com/shani8dev/shani-builder/main/pkg/pkg-builder.sh
+          curl -L -o pkg-builder.sh https://raw.githubusercontent.com/shani8dev/shani-builder/refs/heads/main/pkg/pkg-builder.sh
           chmod +x pkg-builder.sh  # Make sure your script is executable
 
       - name: Run build script

@@ -3,13 +3,13 @@
 set -euo pipefail  # Exit on error and treat unset variables as errors
 
 # Configuration variables
-
 readonly SSH_PRIVATE_KEY="${1:-${SSH_PRIVATE_KEY}}"
 readonly GPG_PASSPHRASE="${2:-${GPG_PASSPHRASE}}"
 readonly GPG_PRIVATE_KEY="${3:-${GPG_PRIVATE_KEY}}"
-readonly PKGBUILD_REPO_URL="https://github.com/shani8dev/shani-pkgbuilds.git"
+readonly PKGBUILD_REPO_URL="git@github.com:shani8dev/shani-pkgbuilds.git"
 readonly PUBLIC_REPO_URL="git@github.com:shani8dev/shani-repo.git"
-readonly BASE_LOGFILE="build_process.log"  # Initialize base log file
+readonly DB_UPDATE_FILE="./db_update.txt"  # File to track package updates
+readonly BASE_LOGFILE="./build_process.log"  # Initialize base log file
 
 # Check essential environment variables
 for var in SSH_PRIVATE_KEY GPG_PASSPHRASE GPG_PRIVATE_KEY; do
@@ -21,13 +21,12 @@ done
 
 # Determine architecture and set ARCH_DIR
 readonly ARCH=$(uname -m)
-
 case "$ARCH" in
     x86_64)
-        ARCH_DIR="public-repo/x86_64"
+        ARCH_DIR="./shani-repo/x86_64"
         ;;
     armv7l|aarch64)
-        ARCH_DIR="public-repo/arm"
+        ARCH_DIR="./shani-repo/arm"
         ;;
     *)
         echo "Unsupported architecture: $ARCH"
@@ -68,13 +67,13 @@ install_docker() {
 # Function to setup SSH for Git
 setup_ssh() {
     log "$BASE_LOGFILE" "Setting up SSH..."
-    mkdir -p ~/.ssh
-    echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
-    chmod 600 ~/.ssh/id_rsa
+    mkdir -p ./ssh-config
+    echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ./ssh-config/id_rsa
+    chmod 600 ./ssh-config/id_rsa
 
-    cat <<EOF > ~/.ssh/config
+    cat <<EOF > ./ssh-config/config
 Host github.com
-  IdentityFile ~/.ssh/id_rsa
+  IdentityFile ./ssh-config/id_rsa
   StrictHostKeyChecking no
 EOF
 }
@@ -93,7 +92,7 @@ clone_or_update_repo() {
         cd .. || exit
     else
         log "$BASE_LOGFILE" "Cloning $dir_name..."
-        git clone "$repo_url" "$dir_name"
+        GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -i ./ssh-config/id_rsa' git clone "$repo_url" "$dir_name"
     fi
 }
 
@@ -104,43 +103,22 @@ remove_old_versions() {
     local current_pkgver="$3"
     local current_pkgrel="$4"
 
-    # Find all package files and signatures matching the package name
-    local pkg_files=("$ARCH_DIR/$pkgname"-*.pkg.tar.zst)
-    local sig_files=("$ARCH_DIR/$pkgname"-*.pkg.tar.zst.sig)
-
-    # Check if any package files were found
-    if [[ ${#pkg_files[@]} -gt 0 ]]; then
-        for pkg in "${pkg_files[@]}"; do
-            # Extract pkgver and pkgrel from the filename
-            [[ "$pkg" =~ $pkgname-([0-9]+)-([0-9]+).* ]] || continue
+    # Find and remove old package and signature files
+    for file_type in pkg.tar.zst pkg.tar.zst.sig; do
+        for file in "$ARCH_DIR/$pkgname"-*.$file_type; do
+            [[ -e $file ]] || continue  # Skip if file does not exist
+            [[ "$file" =~ $pkgname-([^-.]+)-([^-]+)\.$file_type ]] || continue
             local pkgver="${BASH_REMATCH[1]}"
             local pkgrel="${BASH_REMATCH[2]}"
 
-            # Remove package if it's not the current version
+            # Remove package or signature if it's not the current version
             if [[ "$pkgver" != "$current_pkgver" || "$pkgrel" != "$current_pkgrel" ]]; then
-                echo "Removing older package: $pkg"
-                rm -f "$pkg"
+                log "$BASE_LOGFILE" "Removing older ${file_type}: $file"
+                rm -f "$file"
             fi
         done
-    fi
-
-    # Check if any signature files were found
-    if [[ ${#sig_files[@]} -gt 0 ]]; then
-        for sig in "${sig_files[@]}"; do
-            # Extract pkgver and pkgrel from the filename
-            [[ "$sig" =~ $pkgname-([0-9]+)-([0-9]+).*\.sig$ ]] || continue
-            local pkgver="${BASH_REMATCH[1]}"
-            local pkgrel="${BASH_REMATCH[2]}"
-
-            # Remove signature if it's not the current version
-            if [[ "$pkgver" != "$current_pkgver" || "$pkgrel" != "$current_pkgrel" ]]; then
-                echo "Removing older signature: $sig"
-                rm -f "$sig"
-            fi
-        done
-    fi
+    done
 }
-
 
 # Function to build packages
 build_package() {
@@ -149,10 +127,11 @@ build_package() {
     source "$PKGBUILD_DIR/PKGBUILD"
     local PKG_FILE="${pkgname}-${pkgver}-${pkgrel}-${arch}.pkg.tar.zst"
     local PKG_SIG="${PKG_FILE}.sig"
-    local package_log_file="build_${pkgname}.log"
+    local package_log_file="./build_${pkgname}.log"
+    local db_update_required=false
 
     # Check if package already exists in public repo with matching version
-    if [ -f "$ARCH_DIR/$PKG_FILE" ] && [ -f "$ARCH_DIR/$PKG_SIG" ]; then
+    if [[ -f "$ARCH_DIR/$PKG_FILE" && -f "$ARCH_DIR/$PKG_SIG" ]]; then
         log "$package_log_file" "Package $PKG_FILE and $PKG_SIG already exists, skipping build..."
         return
     fi
@@ -163,7 +142,11 @@ build_package() {
     log "$package_log_file" "Building new package: $pkgname version $pkgver"
     # Change ownership of PKGBUILD_DIR before running Docker
     sudo chown -R "$(whoami):$(whoami)" "$PKGBUILD_DIR"
-    echo "$GPG_PRIVATE_KEY" > gpg-private.key
+    
+    # Create temporary GPG key file
+    echo "$GPG_PRIVATE_KEY" > ./gpg-private.key
+
+    # Run Docker to build the package
     sudo docker run --rm \
         -v "$(pwd):/pkg" \
         -v "$(pwd)/gpg-private.key:/home/builduser/.gnupg/temp-private.asc" \
@@ -184,80 +167,113 @@ build_package() {
     "
 
     # Move the built package and signature to the public repo
-    if [ -f "$PKGBUILD_DIR/$PKG_FILE" ]; then
-        sudo mv "$PKGBUILD_DIR/$PKG_FILE" "$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $PKG_FILE."
-    else
-        log "$BASE_LOGFILE" "Warning: Package file not found."
-    fi
-
-    if [ -f "$PKGBUILD_DIR/$PKG_SIG" ]; then
-        sudo mv "$PKGBUILD_DIR/$PKG_SIG" "$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $PKG_SIG."
-    else
-        log "$BASE_LOGFILE" "Warning: Signature file not found."
-    fi
+    for file in "$PKG_FILE" "$PKG_SIG"; do
+		if [ -f "$PKGBUILD_DIR/$file" ]; then
+			sudo mv "$PKGBUILD_DIR/$file" "$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $file."
+			db_update_required=true  # Mark for database update
+		else
+			log "$BASE_LOGFILE" "Warning: $file not found."
+		fi
+    done
 
     # Clean up build directories
     rm -rf "$PKGBUILD_DIR/pkg" "$PKGBUILD_DIR/src"
+
+    # Clean up the temporary GPG key
+    rm -f ./gpg-private.key
+
+    if [ "$db_update_required" = true ]; then
+        update_database "$pkgname" "$ARCH_DIR"
+    fi
 }
 
-# Function to update the repository database
-update_repo_database() {
-    log "$BASE_LOGFILE" "Updating package repository database..."
+# Function to update the database only if there are changes
+update_database() {
+    local pkgname="$1"
+    local ARCH_DIR="$2"
+
+    # Check if the database update file exists
+    if [[ ! -f "$DB_UPDATE_FILE" ]]; then
+        touch "$DB_UPDATE_FILE"
+    fi
+
+    # Check if the package version is already in the database update file
+    if grep -q "$pkgname" "$DB_UPDATE_FILE"; then
+        log "$BASE_LOGFILE" "No changes detected for $pkgname, skipping database update."
+    else
+        log "$BASE_LOGFILE" "Updating database for $pkgname..."
+        echo "$pkgname" >> "$DB_UPDATE_FILE"  # Update the database
     sudo docker run --rm -v "$(pwd)/$ARCH_DIR:/repo" archlinux/archlinux:base-devel /bin/bash -c "
       cd /repo || { echo 'Failed to change directory'; exit 1; }
       rm -f shani.db* shani.files*
       repo-add shani.db.tar.gz *.pkg.tar.zst
     "
+    fi
 }
 
-# Function to commit and push changes to the public repository
+# Function to commit and push changes to the public repo
 commit_and_push() {
-    cd "public-repo" || exit 1
-    log "$BASE_LOGFILE" "Committing and pushing changes to public repository..."
+    local repo_dir="$1"
+    local commit_msg="$2"
+
+    log "$BASE_LOGFILE" "Committing changes to the repository..."
+    cd "$repo_dir" || exit
+
+    if ! git diff --quiet; then
     git config --global user.name "Shrinivas Kumbhar"
     git config --global user.email "shrinivas.v.kumbhar@gmail.com"
     git add .
-    git commit -m "Update package repository with new builds" || log "$BASE_LOGFILE" "No changes to commit."
-    if ! git push; then
-        log "$BASE_LOGFILE" "Error: Failed to push changes to the public repository."
-        exit 1
+        git commit -m "$commit_msg"
+        log "$BASE_LOGFILE" "Changes committed successfully."
+        GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -i ./ssh-config/id_rsa' git push origin main
+        log "$BASE_LOGFILE" "Changes pushed to the remote repository."
+    else
+        log "$BASE_LOGFILE" "No changes to commit."
     fi
-    log "$BASE_LOGFILE" "Changes pushed to the public repository successfully."
 }
 
-# Main script execution
-log "$BASE_LOGFILE" "Starting build process..."
+# Function to clean up temporary SSH configuration
+cleanup_ssh() {
+    log "$BASE_LOGFILE" "Cleaning up temporary SSH configuration..."
+    rm -rf ./ssh-config
+}
 
-# Step 1: Install Docker if not already installed
+
+# Install Docker if not present
 install_docker
 
-# Step 2: Setup SSH
+# Setup SSH configuration
 setup_ssh
 
-# Step 3: Clone or update the PKGBUILD repository
+# Clone or update pkgbuild repository
 log "$BASE_LOGFILE" "Handling PKGBUILD repository..."
-clone_or_update_repo "$PKGBUILD_REPO_URL" "PKGBUILD-repo"
+clone_or_update_repo "$PKGBUILD_REPO_URL" "shani-pkgbuilds"
 
-# Step 4: Clone or update the public repository
+# Clone or update the public repository
 log "$BASE_LOGFILE" "Handling public repository..."
-clone_or_update_repo "$PUBLIC_REPO_URL" "public-repo"
+clone_or_update_repo "$PUBLIC_REPO_URL" "shani-repo"
 
-# Step 5: Ensure architecture directory exists in the public repo
+# Ensure architecture directory exists in the public repo
 log "$BASE_LOGFILE" "Ensuring architecture directory exists in public repo..."
 mkdir -p "$ARCH_DIR"
 
-# Step 6: Build packages
+# Change into the PKGBUILD directory and build packages
+cd ./shani-pkgbuilds || exit
+
+# Loop through each PKGBUILD in the PKGBUILD repository and build packages
 log "$BASE_LOGFILE" "Building and signing packages..."
-for PKGBUILD_DIR in PKGBUILD-repo/*; do
-    if [ -d "$PKGBUILD_DIR" ] && [ -f "$PKGBUILD_DIR/PKGBUILD" ]; then
+for PKGBUILD_DIR in shani-pkgbuilds/*/; do
+    if [ -f "$PKGBUILD_DIR/PKGBUILD" ]; then
         build_package "$PKGBUILD_DIR"
+    else
+        log "$BASE_LOGFILE" "Skipping $PKGBUILD_DIR, no PKGBUILD found."
     fi
 done
 
-# Step 7: Update repository database
-update_repo_database
+# Commit and push changes to the public repository
+commit_and_push "shani-repo" "Update package repository with new builds"
 
-# Step 8: Commit and push changes
-commit_and_push
+cleanup_ssh  # Cleanup SSH after repository cloning
 
 log "$BASE_LOGFILE" "Build process completed successfully."
+

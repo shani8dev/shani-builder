@@ -257,9 +257,6 @@ clone_or_update_repo "$PUBLIC_REPO_URL" "shani-repo"
 log "$BASE_LOGFILE" "Ensuring architecture directory exists in public repo..."
 mkdir -p "$ARCH_DIR"
 
-# Change into the PKGBUILD directory and build packages
-cd ./shani-pkgbuilds || exit
-
 # Loop through each PKGBUILD in the PKGBUILD repository and build packages
 log "$BASE_LOGFILE" "Building and signing packages..."
 for PKGBUILD_DIR in shani-pkgbuilds/*/; do

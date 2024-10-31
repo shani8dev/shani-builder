@@ -206,7 +206,12 @@ update_database() {
     sudo docker run --rm -v "$(pwd)/$ARCH_DIR:/repo" archlinux/archlinux:base-devel /bin/bash -c "
       cd /repo || { echo 'Failed to change directory'; exit 1; }
       rm -f shani.db* shani.files*
+      # Add packages to the repo database
       repo-add shani.db.tar.gz *.pkg.tar.zst
+            
+      # Copy the generated database files
+      cp shani.db.tar.gz shani.db
+      cp shani.files.tar.gz shani.files
     "
     fi
 }

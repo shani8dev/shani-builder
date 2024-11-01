@@ -169,14 +169,14 @@ build_package() {
             cd /pkg/$PKGBUILD_DIR || { echo 'Failed to change directory'; exit 1; }
             
             # Attempt to build the package
-		    	if ! makepkg -sc --noconfirm; then
-		        echo 'Package build failed for $PKGBUILD_DIR' >> /var/log/package_build.log
-		    fi
+            if ! makepkg -sc --noconfirm; then
+                echo 'Package build failed for $PKGBUILD_DIR' >> /home/builduser/package_build.log
+            fi
 
-		    # Attempt to sign the package
-		    if ! echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"${PKG_FILE}.sig\" --sign \"${PKG_FILE}\"; then
-		        echo 'Signing failed for ${PKG_FILE}' >> /var/log/package_build.log
-		    fi
+            # Attempt to sign the package
+            if ! echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"${PKG_FILE}.sig\" --sign \"${PKG_FILE}\"; then
+                echo 'Signing failed for ${PKG_FILE}' >> /home/builduser/package_build.log
+            fi
         \"
     "
 

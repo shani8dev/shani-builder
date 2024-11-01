@@ -247,7 +247,7 @@ commit_and_push() {
         git add .
         git commit -m "$commit_msg"
         log "$BASE_LOGFILE" "Changes committed successfully."
-        GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -i ./ssh-config/id_rsa' git push origin main
+        GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -i ../ssh-config/id_rsa' git push origin main
         log "$BASE_LOGFILE" "Changes pushed to the remote repository."
     else
         log "$BASE_LOGFILE" "No changes to commit."

@@ -16,7 +16,7 @@ RUN pacman -Sy --noconfirm archlinux-keyring && \
     pacman-key --populate archlinux && \
     pacman -Sy --noconfirm shani-keyring && \
     pacman --noconfirm -Syu && \
-    pacman --noconfirm -S --needed archiso git pacman-contrib shim-signed sbsigntools btrfs-progs arch-install-scripts && \
+    pacman --noconfirm -S --needed archiso git pacman-contrib shim-signed sbsigntools btrfs-progs arch-install-scripts flatpak && \
     pacman -Scc --noconfirm  # Clean package cache
 
 # Create build user and configure environment
@@ -26,7 +26,7 @@ RUN useradd -m builduser || true && \
     echo 'builduser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
 
 # Set the working directory
-WORKDIR /root/shanios
+WORKDIR /builduser/build
 
 # Build pikaur packages as the 'build' user
 ENV BUILD_USER "builduser"

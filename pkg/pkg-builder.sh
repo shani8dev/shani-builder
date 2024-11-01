@@ -198,7 +198,7 @@ update_database() {
 
     # Check if the database update file exists
     if [[ ! -f "$DB_UPDATE_FILE" ]]; then
-        touch "$DB_UPDATE_FILE"
+        sudo touch "$DB_UPDATE_FILE"
     fi
 
     # Check if the package version is already in the database update file

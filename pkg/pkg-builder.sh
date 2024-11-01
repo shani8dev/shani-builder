@@ -159,6 +159,8 @@ build_package() {
         chown -R builduser:builduser /home/builduser/.gnupg
         chown -R builduser:builduser /pkg  # Change ownership of the /pkg directory
         
+        # Allow builduser to run sudo without a password
+    		echo 'builduser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
         # Update the package database
         pacman -Sy --noconfirm || { echo 'Failed to update package database'; exit 1; }
         

@@ -170,12 +170,12 @@ build_package() {
             
             # Attempt to build the package
             if ! makepkg -sc --noconfirm; then
-                echo 'Package build failed for $PKGBUILD_DIR' >> /home/builduser/package_build.log
+                echo 'Package build failed for $PKGBUILD_DIR'
             fi
 
             # Attempt to sign the package
             if ! echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"${PKG_FILE}.sig\" --sign \"${PKG_FILE}\"; then
-                echo 'Signing failed for ${PKG_FILE}' >> /home/builduser/package_build.log
+                echo 'Signing failed for ${PKG_FILE}'
             fi
         \"
     "

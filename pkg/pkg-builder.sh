@@ -167,8 +167,16 @@ build_package() {
         su - builduser -c \"
             echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo 'GPG private key import failed'; exit 1; }
             cd /pkg/$PKGBUILD_DIR || { echo 'Failed to change directory'; exit 1; }
-            makepkg -sc --noconfirm || { echo 'Package build failed'; exit 1; }
-            echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"${PKG_FILE}.sig\" --sign \"${PKG_FILE}\" || { echo 'Signing failed for ${PKG_FILE}'; exit 1; }
+            
+            # Attempt to build the package
+		    	if ! makepkg -sc --noconfirm; then
+		        echo 'Package build failed for $PKGBUILD_DIR' >> /var/log/package_build.log
+		    fi
+
+		    # Attempt to sign the package
+		    if ! echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"${PKG_FILE}.sig\" --sign \"${PKG_FILE}\"; then
+		        echo 'Signing failed for ${PKG_FILE}' >> /var/log/package_build.log
+		    fi
         \"
     "
 

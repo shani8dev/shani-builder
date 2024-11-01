@@ -158,6 +158,10 @@ build_package() {
         mkdir -p /home/builduser/.gnupg
         chown -R builduser:builduser /home/builduser/.gnupg
         chown -R builduser:builduser /pkg  # Change ownership of the /pkg directory
+        
+        # Update the package database
+        pacman -Sy --noconfirm || { echo 'Failed to update package database'; exit 1; }
+        
         su - builduser -c \"
             echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo 'GPG private key import failed'; exit 1; }
             cd /pkg/$PKGBUILD_DIR || { echo 'Failed to change directory'; exit 1; }
@@ -180,7 +184,7 @@ build_package() {
     rm -rf "$PKGBUILD_DIR/pkg" "$PKGBUILD_DIR/src"
 
     # Clean up the temporary GPG key
-    rm -f ./gpg-private.key
+    sudo rm -f ./gpg-private.key
 
     if [ "$db_update_required" = true ]; then
         update_database "$pkgname" "$ARCH_DIR"

@@ -162,7 +162,7 @@ build_package() {
         # Allow builduser to run sudo without a password
     		echo 'builduser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
         # Update the package database
-        pacman -Sy --noconfirm || { echo 'Failed to update package database'; exit 1; }
+        pacman -Sy --noconfirm git || { echo 'Failed to update package database'; exit 1; }
         
         su - builduser -c \"
             echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo 'GPG private key import failed'; exit 1; }

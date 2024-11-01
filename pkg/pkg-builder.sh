@@ -199,6 +199,7 @@ update_database() {
     # Check if the database update file exists
     if [[ ! -f "$DB_UPDATE_FILE" ]]; then
         sudo touch "$DB_UPDATE_FILE"
+        sudo chown $(whoami):$(whoami) "$DB_UPDATE_FILE"
     fi
 
     # Check if the package version is already in the database update file
@@ -206,7 +207,7 @@ update_database() {
         log "$BASE_LOGFILE" "No changes detected for $pkgname, skipping database update."
     else
         log "$BASE_LOGFILE" "Updating database for $pkgname..."
-        echo "$pkgname" >> "$DB_UPDATE_FILE"  # Update the database
+        echo "$pkgname" | sudo tee -a "$DB_UPDATE_FILE"  # Append to the database
     sudo docker run --rm -v "$(pwd)/$ARCH_DIR:/repo" archlinux/archlinux:base-devel /bin/bash -c "
       cd /repo || { echo 'Failed to change directory'; exit 1; }
       rm -f shani.db* shani.files*

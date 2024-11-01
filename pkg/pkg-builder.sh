@@ -214,6 +214,8 @@ update_database() {
           # Add packages to the repo database
           repo-add shani.db.tar.gz *.pkg.tar.zst
           
+          rm -f shani.db shani.files
+          
           # Copy the generated database files
           cp shani.db.tar.gz shani.db
           cp shani.files.tar.gz shani.files

@@ -153,18 +153,17 @@ build_package() {
         -e PKGBUILD_DIR="$(basename "$PKGBUILD_DIR")" \
         -e GPG_PASSPHRASE="$GPG_PASSPHRASE" \
         -e PKG_FILE="$PKG_FILE" \
-        archlinux/archlinux:base-devel bash -c "
-        useradd -m builduser || true
-        mkdir -p /home/builduser/.gnupg
+        shrinivasvkumbhar/shani-builder:latest bash -c "
+        # Create GnuPG directory and set ownership for builduser
+        mkdir -p /home/builduser/.gnupg && \
         chown -R builduser:builduser /home/builduser/.gnupg
         chown -R builduser:builduser /pkg  # Change ownership of the /pkg directory
         
-        # Allow builduser to run sudo without a password
-    		echo 'builduser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
         # Update the package database
         pacman -Sy --noconfirm git || { echo 'Failed to update package database'; exit 1; }
         
         su - builduser -c \"
+        		# Import the GPG private key
             echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo 'GPG private key import failed'; exit 1; }
             cd /pkg/$PKGBUILD_DIR || { echo 'Failed to change directory'; exit 1; }
             
@@ -218,7 +217,7 @@ update_database() {
     else
         log "$BASE_LOGFILE" "Updating database for $pkgname..."
         echo "$pkgname" >> "$DB_UPDATE_FILE"  # Append to the database
-        docker run --rm -v "$(pwd)/$ARCH_DIR:/repo" archlinux/archlinux:base-devel /bin/bash -c "
+        docker run --rm -v "$(pwd)/$ARCH_DIR:/repo" shrinivasvkumbhar/shani-builder:latest /bin/bash -c "
           cd /repo || { echo 'Failed to change directory'; exit 1; }
           rm -f shani.db* shani.files*
           # Add packages to the repo database

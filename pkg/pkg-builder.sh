@@ -39,7 +39,7 @@ log() {
     local log_file="$1"
     local message="$2"
     local timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-    echo "$timestamp - $message" | sudo tee -a "$log_file"
+    echo "$timestamp - $message" >> "$log_file"
 }
 
 # Function to install Docker if not already installed
@@ -49,9 +49,9 @@ install_docker() {
         if [ -f /etc/os-release ]; then
             . /etc/os-release
             case "$ID" in
-                ubuntu|debian) sudo apt-get update && sudo apt-get install -y docker.io ;;
-                arch) sudo pacman -S --noconfirm docker ;;
-                fedora|centos|rhel) sudo dnf install -y docker ;;
+                ubuntu|debian) apt-get update && apt-get install -y docker.io ;;
+                arch) pacman -S --noconfirm docker ;;
+                fedora|centos|rhel) dnf install -y docker ;;
                 *) log "$BASE_LOGFILE" "Error: Unsupported OS for Docker installation."; exit 1 ;;
             esac
             log "$BASE_LOGFILE" "Docker installed successfully."
@@ -141,13 +141,13 @@ build_package() {
 
     log "$package_log_file" "Building new package: $pkgname version $pkgver"
     # Change ownership of PKGBUILD_DIR before running Docker
-    sudo chown -R "$(whoami):$(whoami)" "$PKGBUILD_DIR"
+    chown -R "$(whoami):$(whoami)" "$PKGBUILD_DIR"
     
     # Create temporary GPG key file
     echo "$GPG_PRIVATE_KEY" > ./gpg-private.key
 
     # Run Docker to build the package
-    sudo docker run --rm \
+    docker run --rm \
         -v "$(pwd):/pkg" \
         -v "$(pwd)/gpg-private.key:/home/builduser/.gnupg/temp-private.asc" \
         -e PKGBUILD_DIR="$(basename "$PKGBUILD_DIR")" \
@@ -172,19 +172,19 @@ build_package() {
 
     # Move the built package and signature to the public repo
     for file in "$PKG_FILE" "$PKG_SIG"; do
-		if [ -f "$PKGBUILD_DIR/$file" ]; then
-			sudo mv "$PKGBUILD_DIR/$file" "$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $file."
-			db_update_required=true  # Mark for database update
-		else
-			log "$BASE_LOGFILE" "Warning: $file not found."
-		fi
+        if [ -f "$PKGBUILD_DIR/$file" ]; then
+            mv "$PKGBUILD_DIR/$file" "$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $file."
+            db_update_required=true  # Mark for database update
+        else
+            log "$BASE_LOGFILE" "Warning: $file not found."
+        fi
     done
 
     # Clean up build directories
     rm -rf "$PKGBUILD_DIR/pkg" "$PKGBUILD_DIR/src"
 
     # Clean up the temporary GPG key
-    sudo rm -f ./gpg-private.key
+    rm -f ./gpg-private.key
 
     if [ "$db_update_required" = true ]; then
         update_database "$pkgname" "$ARCH_DIR"
@@ -198,8 +198,8 @@ update_database() {
 
     # Check if the database update file exists
     if [[ ! -f "$DB_UPDATE_FILE" ]]; then
-        sudo touch "$DB_UPDATE_FILE"
-        sudo chown $(whoami):$(whoami) "$DB_UPDATE_FILE"
+        touch "$DB_UPDATE_FILE"
+        chown $(whoami):$(whoami) "$DB_UPDATE_FILE"
     fi
 
     # Check if the package version is already in the database update file
@@ -207,17 +207,17 @@ update_database() {
         log "$BASE_LOGFILE" "No changes detected for $pkgname, skipping database update."
     else
         log "$BASE_LOGFILE" "Updating database for $pkgname..."
-        echo "$pkgname" | sudo tee -a "$DB_UPDATE_FILE"  # Append to the database
-    sudo docker run --rm -v "$(pwd)/$ARCH_DIR:/repo" archlinux/archlinux:base-devel /bin/bash -c "
-      cd /repo || { echo 'Failed to change directory'; exit 1; }
-      rm -f shani.db* shani.files*
-      # Add packages to the repo database
-      repo-add shani.db.tar.gz *.pkg.tar.zst
-            
-      # Copy the generated database files
-      cp shani.db.tar.gz shani.db
-      cp shani.files.tar.gz shani.files
-    "
+        echo "$pkgname" >> "$DB_UPDATE_FILE"  # Append to the database
+        docker run --rm -v "$(pwd)/$ARCH_DIR:/repo" archlinux/archlinux:base-devel /bin/bash -c "
+          cd /repo || { echo 'Failed to change directory'; exit 1; }
+          rm -f shani.db* shani.files*
+          # Add packages to the repo database
+          repo-add shani.db.tar.gz *.pkg.tar.zst
+          
+          # Copy the generated database files
+          cp shani.db.tar.gz shani.db
+          cp shani.files.tar.gz shani.files
+        "
     fi
 }
 
@@ -230,9 +230,9 @@ commit_and_push() {
     cd "$repo_dir" || exit
 
     if ! git diff --quiet; then
-    git config --global user.name "Shrinivas Kumbhar"
-    git config --global user.email "shrinivas.v.kumbhar@gmail.com"
-    git add .
+        git config --global user.name "Shrinivas Kumbhar"
+        git config --global user.email "shrinivas.v.kumbhar@gmail.com"
+        git add .
         git commit -m "$commit_msg"
         log "$BASE_LOGFILE" "Changes committed successfully."
         GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -i ./ssh-config/id_rsa' git push origin main
@@ -247,7 +247,6 @@ cleanup_ssh() {
     log "$BASE_LOGFILE" "Cleaning up temporary SSH configuration..."
     rm -rf ./ssh-config
 }
-
 
 # Install Docker if not present
 install_docker

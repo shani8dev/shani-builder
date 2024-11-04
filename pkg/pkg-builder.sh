@@ -34,39 +34,38 @@ case "$ARCH" in
         ;;
 esac
 
-# Logging function
+# Simple logging function to output directly to shell
 log() {
-    local log_file="$1"
-    local message="$2"
+    local message="$1"
     local timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-    echo "$timestamp - $message" >> "$log_file"
+    echo "$timestamp - $message"
 }
 
 # Function to install Docker if not already installed
 install_docker() {
     if ! command -v docker &> /dev/null; then
-        log "$BASE_LOGFILE" "Docker not found, installing..."
+        log "Docker not found, installing..."
         if [ -f /etc/os-release ]; then
             . /etc/os-release
             case "$ID" in
                 ubuntu|debian) apt-get update && apt-get install -y docker.io ;;
                 arch) pacman -S --noconfirm docker ;;
                 fedora|centos|rhel) dnf install -y docker ;;
-                *) log "$BASE_LOGFILE" "Error: Unsupported OS for Docker installation."; exit 1 ;;
+                *) log "Error: Unsupported OS for Docker installation."; exit 1 ;;
             esac
-            log "$BASE_LOGFILE" "Docker installed successfully."
+            log "Docker installed successfully."
         else
-            log "$BASE_LOGFILE" "Error: Unknown OS, cannot install Docker."
+            log "Error: Unknown OS, cannot install Docker."
             exit 1
         fi
     else
-        log "$BASE_LOGFILE" "Docker is already installed."
+        log "Docker is already installed."
     fi
 }
 
 # Function to setup SSH for Git
 setup_ssh() {
-    log "$BASE_LOGFILE" "Setting up SSH..."
+    log "Setting up SSH..."
     mkdir -p ./ssh-config
     echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ./ssh-config/id_rsa
     chmod 600 ./ssh-config/id_rsa
@@ -84,14 +83,14 @@ clone_or_update_repo() {
     local dir_name="$2"
 
     if [ -d "$dir_name" ]; then
-        log "$BASE_LOGFILE" "$dir_name exists, resetting to match remote..."
+        log "$dir_name exists, resetting to match remote..."
         cd "$dir_name" || exit
         git fetch origin
         git reset --hard origin/main
         git clean -fdx
         cd .. || exit
     else
-        log "$BASE_LOGFILE" "Cloning $dir_name..."
+        log "Cloning $dir_name..."
         GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -i ./ssh-config/id_rsa' git clone "$repo_url" "$dir_name"
     fi
 }
@@ -113,7 +112,7 @@ remove_old_versions() {
 
             # Remove package or signature if it's not the current version
             if [[ "$pkgver" != "$current_pkgver" || "$pkgrel" != "$current_pkgrel" ]]; then
-                log "$BASE_LOGFILE" "Removing older ${file_type}: $file"
+                log "Removing older ${file_type}: $file"
                 rm -f "$file"
             fi
         done
@@ -182,10 +181,10 @@ build_package() {
     # Move the built package and signature to the public repo
     for file in "$PKG_FILE" "$PKG_SIG"; do
         if [ -f "$PKGBUILD_DIR/$file" ]; then
-            mv "$PKGBUILD_DIR/$file" "$ARCH_DIR/" || log "$BASE_LOGFILE" "Warning: Failed to move $file."
+            mv "$PKGBUILD_DIR/$file" "$ARCH_DIR/" || log "Warning: Failed to move $file."
             db_update_required=true  # Mark for database update
         else
-            log "$BASE_LOGFILE" "Warning: $file not found."
+            log "Warning: $file not found."
         fi
     done
 
@@ -213,9 +212,9 @@ update_database() {
 
     # Check if the package version is already in the database update file
     if grep -q "$pkgname" "$DB_UPDATE_FILE"; then
-        log "$BASE_LOGFILE" "No changes detected for $pkgname, skipping database update."
+        log "No changes detected for $pkgname, skipping database update."
     else
-        log "$BASE_LOGFILE" "Updating database for $pkgname..."
+        log "Updating database for $pkgname..."
         echo "$pkgname" >> "$DB_UPDATE_FILE"  # Append to the database
         docker run --rm -v "$(pwd)/$ARCH_DIR:/repo" shrinivasvkumbhar/shani-builder:latest /bin/bash -c "
           cd /repo || { echo 'Failed to change directory'; exit 1; }
@@ -237,7 +236,7 @@ commit_and_push() {
     local repo_dir="$1"
     local commit_msg="$2"
 
-    log "$BASE_LOGFILE" "Committing changes to the repository..."
+    log "Committing changes to the repository..."
     cd "$repo_dir" || exit
 
     if ! git diff --quiet; then
@@ -245,17 +244,17 @@ commit_and_push() {
         git config --global user.email "shrinivas.v.kumbhar@gmail.com"
         git add .
         git commit -m "$commit_msg"
-        log "$BASE_LOGFILE" "Changes committed successfully."
+        log "Changes committed successfully."
         GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no -i ../ssh-config/id_rsa' git push origin main
-        log "$BASE_LOGFILE" "Changes pushed to the remote repository."
+        log "Changes pushed to the remote repository."
     else
-        log "$BASE_LOGFILE" "No changes to commit."
+        log "No changes to commit."
     fi
 }
 
 # Function to clean up temporary SSH configuration
 cleanup_ssh() {
-    log "$BASE_LOGFILE" "Cleaning up temporary SSH configuration..."
+    log "Cleaning up temporary SSH configuration..."
     rm -rf ./ssh-config
 }
 
@@ -266,24 +265,24 @@ install_docker
 setup_ssh
 
 # Clone or update pkgbuild repository
-log "$BASE_LOGFILE" "Handling PKGBUILD repository..."
+log "Handling PKGBUILD repository..."
 clone_or_update_repo "$PKGBUILD_REPO_URL" "shani-pkgbuilds"
 
 # Clone or update the public repository
-log "$BASE_LOGFILE" "Handling public repository..."
+log "Handling public repository..."
 clone_or_update_repo "$PUBLIC_REPO_URL" "shani-repo"
 
 # Ensure architecture directory exists in the public repo
-log "$BASE_LOGFILE" "Ensuring architecture directory exists in public repo..."
+log "Ensuring architecture directory exists in public repo..."
 mkdir -p "$ARCH_DIR"
 
 # Loop through each PKGBUILD in the PKGBUILD repository and build packages
-log "$BASE_LOGFILE" "Building and signing packages..."
+log "Building and signing packages..."
 for PKGBUILD_DIR in shani-pkgbuilds/*/; do
     if [ -f "$PKGBUILD_DIR/PKGBUILD" ]; then
         build_package "$PKGBUILD_DIR"
     else
-        log "$BASE_LOGFILE" "Skipping $PKGBUILD_DIR, no PKGBUILD found."
+        log "Skipping $PKGBUILD_DIR, no PKGBUILD found."
     fi
 done
 
@@ -292,5 +291,5 @@ commit_and_push "shani-repo" "Update package repository with new builds"
 
 cleanup_ssh  # Cleanup SSH after repository cloning
 
-log "$BASE_LOGFILE" "Build process completed successfully."
+log "Build process completed successfully."
 

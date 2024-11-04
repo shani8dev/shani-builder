@@ -127,11 +127,12 @@ cleanup_old_versions() {
     for file in "$ARCH_DIR/"*.pkg.tar.zst; do
         [[ -e $file ]] || continue  # Skip if no files match
 
-        if [[ "$file" =~ (.*)-(.*)-(.*)-(.*)\.pkg\.tar\.zst ]]; then
-            local pkgname="${BASH_REMATCH[1]}"
-            local pkgver="${BASH_REMATCH[2]}"
-            local pkgrel="${BASH_REMATCH[3]}"
-            local arch="${BASH_REMATCH[4]}"
+        # Extract the package name, version, release, and architecture from the filename
+        if [[ "$file" =~ (.*)/(.*)-(.*)-(.*)-(.*)\.pkg\.tar\.zst ]]; then
+            local pkgname="${BASH_REMATCH[2]}"
+            local pkgver="${BASH_REMATCH[3]}"
+            local pkgrel="${BASH_REMATCH[4]}"
+            local arch="${BASH_REMATCH[5]}"
 
             local full_name="${pkgname}-${pkgver}-${pkgrel}-${arch}"
             local is_current=0
@@ -159,7 +160,6 @@ cleanup_old_versions() {
         fi
     done
 }
-
 
 # Function to build packages
 build_package() {

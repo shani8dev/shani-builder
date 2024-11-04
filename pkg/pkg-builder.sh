@@ -101,25 +101,72 @@ remove_old_versions() {
     local ARCH_DIR="$2"
     local current_pkgver="$3"
     local current_pkgrel="$4"
+    local arch="$5"
 
-    log "Checking for old versions of package '$pkgname' in '$ARCH_DIR', keeping version $current_pkgver-$current_pkgrel"
+    log "Checking for old versions of package '$pkgname' in '$ARCH_DIR', keeping version $current_pkgver-$current_pkgrel for architecture $arch"
 
-    # Loop through all matching package files in the directory
+    local files_removed=false
+
+    # Loop through all files related to the package
     for file in "$ARCH_DIR/$pkgname"-*.pkg.tar.zst "$ARCH_DIR/$pkgname"-*.pkg.tar.zst.sig; do
-        # Skip if file does not exist
         [[ -e $file ]] || continue
 
-        # Check if the file matches the current version and release
-        if [[ "$file" =~ ${pkgname}-${current_pkgver}-${current_pkgrel}.*\.pkg\.tar\.zst ]]; then
+        log "Processing file: $file"
+
+        # Extract the current filename pattern for exact matching
+        if [[ "$file" =~ ${pkgname}-${current_pkgver}-${current_pkgrel}-${arch}.*\.pkg\.tar\.zst ]]; then
             log "Keeping current version: $file"
         else
-            # Remove file if it does not match the current version/release
             log "Removing old version: $file"
             rm -f "$file"
+            files_removed=true
+        fi
+    done
+
+    if $files_removed; then
+        log "Old versions removed successfully."
+    else
+        log "No old versions found to remove."
+    fi
+}
+
+# Function to clean up old versions of packages
+cleanup_old_versions() {
+    local ARCH_DIR="$1"
+    local current_packages=()
+
+    # Gather current packages from PKGBUILD files
+    for PKGBUILD_DIR in shani-pkgbuilds/*/; do
+        if [ -f "$PKGBUILD_DIR/PKGBUILD" ]; then
+            source "$PKGBUILD_DIR/PKGBUILD"
+            current_packages+=("${pkgname}-${pkgver}-${pkgrel}-${arch}")  # Include architecture
+        fi
+    done
+
+    log "Current packages: ${current_packages[*]}"
+
+    # Remove old versions not in the current package list
+    for file in "$ARCH_DIR/$pkgname"-*.pkg.tar.zst; do
+        [[ -e $file ]] || continue
+
+        # Extract package name and version from the filename
+        if [[ "$file" =~ (.*)-(.*)-(.*)-(.*)\.pkg\.tar\.zst ]]; then
+            local old_pkgname="${BASH_REMATCH[1]}"
+            local old_pkgver="${BASH_REMATCH[2]}"
+            local old_pkgrel="${BASH_REMATCH[3]}"
+            local old_arch="${BASH_REMATCH[4]}"
+
+            local full_old_name="${old_pkgname}-${old_pkgver}-${old_pkgrel}-${old_arch}"
+
+            if [[ ! " ${current_packages[*]} " =~ " ${full_old_name} " ]]; then
+                log "Removing old version: $file"
+                rm -f "$file"
+            else
+                log "Keeping current version: $file"
+            fi
         fi
     done
 }
-
 
 # Function to build packages
 build_package() {
@@ -136,9 +183,6 @@ build_package() {
         log "$package_log_file" "Package $PKG_FILE and $PKG_SIG already exists, skipping build..."
         return
     fi
-
-    # Remove older versions while keeping the current version
-    remove_old_versions "$pkgname" "$ARCH_DIR" "$pkgver" "$pkgrel"
 
     log "$package_log_file" "Building new package: $pkgname version $pkgver"
     # Change ownership of PKGBUILD_DIR before running Docker
@@ -277,6 +321,9 @@ clone_or_update_repo "$PUBLIC_REPO_URL" "shani-repo"
 # Ensure architecture directory exists in the public repo
 log "Ensuring architecture directory exists in public repo..."
 mkdir -p "$ARCH_DIR"
+
+# Cleanup old versions based on current PKGBUILD files
+cleanup_old_versions "$ARCH_DIR"
 
 # Loop through each PKGBUILD in the PKGBUILD repository and build packages
 log "Building and signing packages..."

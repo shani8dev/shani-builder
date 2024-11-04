@@ -95,41 +95,6 @@ clone_or_update_repo() {
     fi
 }
 
-# Function to remove older versions of a package, keeping only the specified current version
-remove_old_versions() {
-    local pkgname="$1"
-    local ARCH_DIR="$2"
-    local current_pkgver="$3"
-    local current_pkgrel="$4"
-    local arch="$5"
-
-    log "Checking for old versions of package '$pkgname' in '$ARCH_DIR', keeping version $current_pkgver-$current_pkgrel for architecture $arch"
-
-    local files_removed=false
-
-    # Loop through all files related to the package
-    for file in "$ARCH_DIR/$pkgname"-*.pkg.tar.zst "$ARCH_DIR/$pkgname"-*.pkg.tar.zst.sig; do
-        [[ -e $file ]] || continue
-
-        log "Processing file: $file"
-
-        # Extract the current filename pattern for exact matching
-        if [[ "$file" =~ ${pkgname}-${current_pkgver}-${current_pkgrel}-${arch}.*\.pkg\.tar\.zst ]]; then
-            log "Keeping current version: $file"
-        else
-            log "Removing old version: $file"
-            rm -f "$file"
-            files_removed=true
-        fi
-    done
-
-    if $files_removed; then
-        log "Old versions removed successfully."
-    else
-        log "No old versions found to remove."
-    fi
-}
-
 # Function to clean up old versions of packages
 cleanup_old_versions() {
     local ARCH_DIR="$1"

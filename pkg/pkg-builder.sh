@@ -97,24 +97,21 @@ clone_or_update_repo() {
 
 # Function to clean up old versions of packages
 cleanup_old_versions() {
-    local ARCH_DIR="$1"
-    local current_packages=()
+    local ARCH_DIR="$1"  # Directory containing the packages
+    declare -A current_packages_map
 
-    # Gather current packages from PKGBUILD files
+    # Collect current packages
     for PKGBUILD_DIR in shani-pkgbuilds/*/; do
         if [ -f "$PKGBUILD_DIR/PKGBUILD" ]; then
             source "$PKGBUILD_DIR/PKGBUILD"
-            current_packages+=("${pkgname}-${pkgver}-${pkgrel}-${arch}")  # Include architecture
+            current_packages_map["${pkgname}-${pkgver}-${pkgrel}-${arch}"]=1
         fi
     done
 
-    log "Current packages: ${current_packages[*]}"
-
-    # Remove old versions not in the current package list
-    for file in "$ARCH_DIR/$pkgname"-*.pkg.tar.zst; do
+    # Iterate over old packages and remove if they are not in current packages
+    for file in "$ARCH_DIR/"*.pkg.tar.zst; do
         [[ -e $file ]] || continue
 
-        # Extract package name and version from the filename
         if [[ "$file" =~ (.*)-(.*)-(.*)-(.*)\.pkg\.tar\.zst ]]; then
             local old_pkgname="${BASH_REMATCH[1]}"
             local old_pkgver="${BASH_REMATCH[2]}"
@@ -123,15 +120,19 @@ cleanup_old_versions() {
 
             local full_old_name="${old_pkgname}-${old_pkgver}-${old_pkgrel}-${old_arch}"
 
-            if [[ ! " ${current_packages[*]} " =~ " ${full_old_name} " ]]; then
+            # Check if the old package is in the current packages map
+            if [[ -z "${current_packages_map[$full_old_name]}" ]]; then
                 log "Removing old version: $file"
                 rm -f "$file"
             else
                 log "Keeping current version: $file"
             fi
+        else
+            log "Skipping unrecognized file format: $file"
         fi
     done
 }
+
 
 # Function to build packages
 build_package() {

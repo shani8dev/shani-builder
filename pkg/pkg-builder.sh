@@ -121,7 +121,7 @@ cleanup_old_versions() {
             local full_old_name="${old_pkgname}-${old_pkgver}-${old_pkgrel}-${old_arch}"
 
             # Check if the old package is in the current packages map
-            if [[ -z "${current_packages_map[$full_old_name]}" ]]; then
+            if [[ -z "${current_packages_map[$full_old_name]+x}" ]]; then
                 log "Removing old version: $file"
                 rm -f "$file"
             else
@@ -132,7 +132,6 @@ cleanup_old_versions() {
         fi
     done
 }
-
 
 # Function to build packages
 build_package() {

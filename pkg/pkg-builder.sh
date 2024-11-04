@@ -100,28 +100,30 @@ cleanup_old_versions() {
     local ARCH_DIR="$1"  # Directory containing the packages
     declare -A current_packages_map
 
-    # Collect current packages
+    # Collect current packages from PKGBUILD files
     for PKGBUILD_DIR in shani-pkgbuilds/*/; do
         if [ -f "$PKGBUILD_DIR/PKGBUILD" ]; then
             source "$PKGBUILD_DIR/PKGBUILD"
-            current_packages_map["${pkgname}-${pkgver}-${pkgrel}-${arch}"]=1
+            for arch in "${arch[@]}"; do
+                current_packages_map["${pkgname}-${pkgver}-${pkgrel}-${arch}"]=1
+            done
         fi
     done
 
-    # Iterate over old packages and remove if they are not in current packages
+    # Loop through the package files in the architecture directory
     for file in "$ARCH_DIR/"*.pkg.tar.zst; do
-        [[ -e $file ]] || continue
+        [[ -e $file ]] || continue  # Skip if no files match
 
         if [[ "$file" =~ (.*)-(.*)-(.*)-(.*)\.pkg\.tar\.zst ]]; then
-            local old_pkgname="${BASH_REMATCH[1]}"
-            local old_pkgver="${BASH_REMATCH[2]}"
-            local old_pkgrel="${BASH_REMATCH[3]}"
-            local old_arch="${BASH_REMATCH[4]}"
+            local pkgname="${BASH_REMATCH[1]}"
+            local pkgver="${BASH_REMATCH[2]}"
+            local pkgrel="${BASH_REMATCH[3]}"
+            local arch="${BASH_REMATCH[4]}"
 
-            local full_old_name="${old_pkgname}-${old_pkgver}-${old_pkgrel}-${old_arch}"
+            local full_name="${pkgname}-${pkgver}-${pkgrel}-${arch}"
 
-            # Check if the old package is in the current packages map
-            if [[ -z "${current_packages_map[$full_old_name]+x}" ]]; then
+            # Remove old versions not in the current packages map
+            if [[ -z "${current_packages_map[$full_name]+x}" ]]; then
                 log "Removing old version: $file"
                 rm -f "$file"
             else

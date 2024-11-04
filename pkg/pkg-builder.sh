@@ -95,29 +95,31 @@ clone_or_update_repo() {
     fi
 }
 
-# Function to remove older versions of a package, keeping the current version
+# Function to remove older versions of a package, keeping only the specified current version
 remove_old_versions() {
     local pkgname="$1"
     local ARCH_DIR="$2"
     local current_pkgver="$3"
     local current_pkgrel="$4"
 
-    # Find and remove old package and signature files
-    for file_type in pkg.tar.zst pkg.tar.zst.sig; do
-        for file in "$ARCH_DIR/$pkgname"-*.$file_type; do
-            [[ -e $file ]] || continue  # Skip if file does not exist
-            [[ "$file" =~ $pkgname-([^-.]+)-([^-]+)\.$file_type ]] || continue
-            local pkgver="${BASH_REMATCH[1]}"
-            local pkgrel="${BASH_REMATCH[2]}"
+    log "Checking for old versions of package '$pkgname' in '$ARCH_DIR', keeping version $current_pkgver-$current_pkgrel"
 
-            # Remove package or signature if it's not the current version
-            if [[ "$pkgver" != "$current_pkgver" || "$pkgrel" != "$current_pkgrel" ]]; then
-                log "Removing older ${file_type}: $file"
-                rm -f "$file"
-            fi
-        done
+    # Loop through all matching package files in the directory
+    for file in "$ARCH_DIR/$pkgname"-*.pkg.tar.zst "$ARCH_DIR/$pkgname"-*.pkg.tar.zst.sig; do
+        # Skip if file does not exist
+        [[ -e $file ]] || continue
+
+        # Check if the file matches the current version and release
+        if [[ "$file" =~ ${pkgname}-${current_pkgver}-${current_pkgrel}.*\.pkg\.tar\.zst ]]; then
+            log "Keeping current version: $file"
+        else
+            # Remove file if it does not match the current version/release
+            log "Removing old version: $file"
+            rm -f "$file"
+        fi
     done
 }
+
 
 # Function to build packages
 build_package() {

@@ -98,17 +98,30 @@ clone_or_update_repo() {
 # Function to clean up old versions of packages
 cleanup_old_versions() {
     local ARCH_DIR="$1"  # Directory containing the packages
-    declare -A current_packages_map
 
-    # Collect current packages from PKGBUILD files
+    # Ensure the architecture directory exists
+    if [[ ! -d "$ARCH_DIR" ]]; then
+        echo "Directory $ARCH_DIR does not exist."
+        return
+    fi
+
+    # Create an array to hold the names of current packages
+    local current_packages=()
+
+    # Loop through the PKGBUILD files to build a list of current package names
     for PKGBUILD_DIR in shani-pkgbuilds/*/; do
         if [ -f "$PKGBUILD_DIR/PKGBUILD" ]; then
             source "$PKGBUILD_DIR/PKGBUILD"
-            for arch in "${arch[@]}"; do
-                current_packages_map["${pkgname}-${pkgver}-${pkgrel}-${arch}"]=1
+            # Construct full package name for each architecture
+            for arch_current in "${arch[@]}"; do
+                current_packages+=("${pkgname}-${pkgver}-${pkgrel}-${arch_current}")
             done
         fi
     done
+
+    # Debug: List current packages for verification
+    echo "Current packages:"
+    printf '%s\n' "${current_packages[@]}"
 
     # Loop through the package files in the architecture directory
     for file in "$ARCH_DIR/"*.pkg.tar.zst; do
@@ -121,9 +134,21 @@ cleanup_old_versions() {
             local arch="${BASH_REMATCH[4]}"
 
             local full_name="${pkgname}-${pkgver}-${pkgrel}-${arch}"
+            local is_current=0
 
-            # Remove old versions not in the current packages map
-            if [[ -z "${current_packages_map[$full_name]+x}" ]]; then
+            # Check if the full package name exists in the current packages array
+            for current in "${current_packages[@]}"; do
+                if [[ "$full_name" == "$current" ]]; then
+                    is_current=1
+                    break  # No need to check further if found
+                fi
+            done
+
+            # Debug: Display the full package name being processed
+            echo "Processed package: $full_name"
+
+            # Remove old version if not found in current packages
+            if [[ $is_current -eq 0 ]]; then
                 log "Removing old version: $file"
                 rm -f "$file"
             else
@@ -134,6 +159,7 @@ cleanup_old_versions() {
         fi
     done
 }
+
 
 # Function to build packages
 build_package() {

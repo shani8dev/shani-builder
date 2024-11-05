@@ -152,6 +152,13 @@ cleanup_old_versions() {
             if [[ $is_current -eq 0 ]]; then
                 log "Removing old version: $file"
                 rm -f "$file"
+
+                # Check and remove the .sig file if it exists
+                local sig_file="${file}.sig"
+                if [[ -f "$sig_file" ]]; then
+                    log "Removing associated signature: $sig_file"
+                    rm -f "$sig_file"
+                fi
             else
                 log "Keeping current version: $file"
             fi

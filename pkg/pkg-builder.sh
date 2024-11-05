@@ -123,12 +123,12 @@ cleanup_old_versions() {
     echo "Current packages:"
     printf '%s\n' "${current_packages[@]}"
 
-    # Loop through the package files in the architecture directory
-    for file in "$ARCH_DIR/"*.pkg.tar.zst; do
+    # Loop through both .pkg.tar.zst and .pkg.tar.zst.sig files in the architecture directory
+    for file in "$ARCH_DIR/"*.pkg.tar.zst "$ARCH_DIR/"*.pkg.tar.zst.sig; do
         [[ -e $file ]] || continue  # Skip if no files match
 
         # Extract the package name, version, release, and architecture from the filename
-        if [[ "$file" =~ (.*)/(.*)-(.*)-(.*)-(.*)\.pkg\.tar\.zst ]]; then
+        if [[ "$file" =~ (.*)/(.*)-(.*)-(.*)-(.*)\.pkg\.tar\.zst(\.sig)? ]]; then
             local pkgname="${BASH_REMATCH[2]}"
             local pkgver="${BASH_REMATCH[3]}"
             local pkgrel="${BASH_REMATCH[4]}"
@@ -152,13 +152,6 @@ cleanup_old_versions() {
             if [[ $is_current -eq 0 ]]; then
                 log "Removing old version: $file"
                 rm -f "$file"
-
-                # Check and remove the .sig file if it exists
-                local sig_file="${file}.sig"
-                if [[ -f "$sig_file" ]]; then
-                    log "Removing associated signature: $sig_file"
-                    rm -f "$sig_file"
-                fi
             else
                 log "Keeping current version: $file"
             fi

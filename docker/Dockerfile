@@ -31,4 +31,3 @@ WORKDIR /builduser/build
 # Build pikaur packages as the 'build' user
 ENV BUILD_USER "builduser"
 ENV GNUPGHOME "/etc/pacman.d/gnupg"
-

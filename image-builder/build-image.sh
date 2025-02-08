@@ -2,96 +2,162 @@
 
 set -euo pipefail
 
-# Configuration variables
+# Configuration Variables
 PROFILE=""
 OUTPUT_DIR="./output"
-VERSION="$(date +%Y%m%d)"
-ROOTLABEL="shani-root"
-WORK_DIR="./cache/temp"
-TARGET_SUBVOL="roota"
-IMAGE_NAME=""
+BUILD_VERSION="$(date +%Y%m%d)"
+ROOT_SUBVOL="shani_root"
+BUILD_DIR="./cache/temp"
+LOOP_DEVICE=""
+IMAGE_FILE="$BUILD_DIR.img"
 
-# OSDN & SSH Details for upload
 OSDN_URL="https://osdn.net/projects/your-project/releases/download"
-FILE_NAME="your-file.btrfs"
-OSDN_FILE_URL="${OSDN_URL}/${FILE_NAME}"
-SERVER_USER="your-username"
-SERVER_HOST="your-server.com"
-REMOTE_PATH="/path/to/your-server/zsync-files"
+REMOTE_USER="librewish"
+REMOTE_HOST="frs.sourceforge.net"
+REMOTE_DIR="/home/librewish/shanios/image/"
+GPG_KEY_ID="your-gpg-key-id"
 
-# Parse command-line arguments
-while getopts "p:u" opt; do
+DEBUG=false
+UPLOAD=false
+
+# Logging Functions
+log() { echo -e "[\e[1;32mINFO\e[0m] $1"; }
+error() { echo -e "[\e[1;31mERROR\e[0m] $1" >&2; exit 1; }
+debug() { $DEBUG && echo -e "[\e[1;34mDEBUG\e[0m] $1"; }
+
+# Parse Arguments
+while getopts "p:ud" opt; do
   case ${opt} in
-    p)
-      PROFILE=$OPTARG
-      ;;
-    u)
-      UPLOAD=true
-      ;;
-    *)
-      echo "Usage: $0 -p <profile> [-u]"
-      exit 1
-      ;;
+    p) PROFILE=$OPTARG ;;
+    u) UPLOAD=true ;;
+    d) DEBUG=true ;;
+    *) error "Usage: $0 -p <profile> [-u] [-d]";;
   esac
 done
 
-# Validate profile argument
-if [[ -z "$PROFILE" ]]; then
-  echo "Error: Profile must be specified with -p"
-  exit 1
-fi
+[[ -z "$PROFILE" ]] && error "Profile must be specified with -p"
 
-PACMAN_CONF="./profiles/$PROFILE/pacman.conf"
-IMAGE_NAME="shani-os-${VERSION}-${PROFILE}.btrfs"
+PACMAN_CONFIG="./profiles/$PROFILE/pacman.conf"
+IMAGE_NAME="shani-os-${BUILD_VERSION}-${PROFILE}.zst"
+LATEST_FILE="$OUTPUT_DIR/latest.txt"
 
-# Check for required tools
-check_tools() {
-  for tool in btrfs pacstrap; do
-    if ! command -v "$tool" >/dev/null; then
-      echo "Error: $tool is required but not installed."
-      exit 1
-    fi
+check_dependencies() {
+  local deps=("btrfs" "pacstrap" "losetup" "mount" "umount" "arch-chroot" "rsync" "genfstab" "zsyncmake" "gpg" "sha256sum" "zstd")
+  for tool in "${deps[@]}"; do
+    command -v "$tool" &>/dev/null || error "$tool is required but not installed."
   done
 }
 
-# Prepare the environment: Create necessary directories, subvolumes, and mounts
-prepare_environment() {
-  echo "Preparing environment in $WORK_DIR..."
-  mkdir -p "$WORK_DIR"
-  
-  # Ensure the working directory is on a btrfs filesystem
-  if ! stat -f --format=%T "$WORK_DIR" | grep -q btrfs; then
-    echo "The working directory is not on a btrfs filesystem. Creating a btrfs loopback device..."
-    dd if=/dev/zero of="$WORK_DIR.img" bs=1G count=5
-    mkfs.btrfs "$WORK_DIR.img"
-    mount -o loop "$WORK_DIR.img" "$WORK_DIR"
+cleanup() {
+  log "Cleaning up..."
+
+  # Unmount subvolumes first, then the main mountpoint
+  if mountpoint -q "$BUILD_DIR/$ROOT_SUBVOL"; then
+    log "Unmounting subvolume: $BUILD_DIR/$ROOT_SUBVOL..."
+    umount "$BUILD_DIR/$ROOT_SUBVOL" || error "Failed to unmount $BUILD_DIR/$ROOT_SUBVOL"
   fi
 
-  mkdir -p "$WORK_DIR/mnt"
-  if ! btrfs subvolume list "$WORK_DIR" | grep -q "$TARGET_SUBVOL"; then
-    btrfs subvolume create "$WORK_DIR/$TARGET_SUBVOL"
+  if mountpoint -q "$BUILD_DIR"; then
+    log "Unmounting build directory: $BUILD_DIR..."
+    umount "$BUILD_DIR" || error "Failed to unmount $BUILD_DIR"
   fi
-  mount -o compress=zstd "$WORK_DIR/$TARGET_SUBVOL" "$WORK_DIR/mnt"
+
+  # Ensure no leftover mounts exist
+  if mount | grep -q "$BUILD_DIR"; then
+    log "Force unmounting all remaining mounts under $BUILD_DIR..."
+    umount -l "$BUILD_DIR" || error "Failed to force unmount $BUILD_DIR"
+  fi
+
+  # Detach the loop device if it exists
+  if [[ -n "${LOOP_DEVICE:-}" && -b "$LOOP_DEVICE" ]]; then
+    log "Detaching loop device: $LOOP_DEVICE"
+    losetup -d "$LOOP_DEVICE" || error "Failed to detach loop device $LOOP_DEVICE"
+  fi
+
+  # Ensure all loop devices associated with the image file are detached
+  while read -r loopdev; do
+    [[ -z "$loopdev" ]] && continue
+    log "Force detaching $loopdev..."
+    losetup -d "$loopdev" || error "Failed to detach loop device $loopdev"
+  done < <(losetup -j "$IMAGE_FILE" | cut -d':' -f1 || true)
+
+  # Kill any lingering processes using the directory
+  log "Checking for active processes using $BUILD_DIR..."
+  fuser -k "$BUILD_DIR" || log "No active processes found."
+
+  # Remove image file and temporary directories
+  [[ -f "$IMAGE_FILE" ]] && rm -f "$IMAGE_FILE"
+  [[ -d "$BUILD_DIR" ]] && rm -rf "$BUILD_DIR"
 }
 
-# Install the base system and apply profile-specific configurations
-build_system() {
-  echo "Building system..."
-  pacstrap -C "$PACMAN_CONF" "$WORK_DIR/mnt" $(< "./profiles/$PROFILE/package-list.txt")
-  
-  # Apply overlay files if they exist
+
+
+trap cleanup EXIT
+
+setup_environment() {
+  log "Setting up environment..."
+  mkdir -p "$BUILD_DIR" "$OUTPUT_DIR"
+  losetup -D  # Ensure no stale loop devices
+
+  # Remove existing image file if it exists
+  if [[ -f "$IMAGE_FILE" ]]; then
+    log "Removing existing image file..."
+    rm -f "$IMAGE_FILE"
+  fi
+
+  log "Creating Btrfs image..."
+  fallocate -l 10G "$IMAGE_FILE"
+  #dd if=/dev/zero of="$IMAGE_FILE" bs=1G count=10 status=progress
+  mkfs.btrfs -f "$IMAGE_FILE"
+
+  LOOP_DEVICE=$(losetup --find --show "$IMAGE_FILE")
+  log "Using loop device: $LOOP_DEVICE"
+
+  log "Mounting Btrfs filesystem..."
+  mount -t btrfs -o compress-force=zstd:19 "$LOOP_DEVICE" "$BUILD_DIR"
+
+  log "Verifying Btrfs mount..."
+  mount | grep "$BUILD_DIR" || error "Failed to mount Btrfs filesystem."
+
+  if btrfs subvolume list "$BUILD_DIR" | grep -q "$ROOT_SUBVOL"; then
+    log "Deleting existing subvolume..."
+    btrfs subvolume delete "$BUILD_DIR/$ROOT_SUBVOL" || error "Failed to delete existing subvolume."
+  fi
+
+  log "Creating new subvolume: $ROOT_SUBVOL"
+  btrfs subvolume create "$BUILD_DIR/$ROOT_SUBVOL" || error "Failed to create subvolume."
+
+  sync  # Ensure changes are flushed to disk
+
+  log "Remounting subvolume..."
+  umount "$BUILD_DIR"
+  mkdir -p "$BUILD_DIR/$ROOT_SUBVOL"
+  mount -o subvol=$ROOT_SUBVOL,compress-force=zstd:19 "$LOOP_DEVICE" "$BUILD_DIR/$ROOT_SUBVOL"
+
+  if ! mountpoint -q "$BUILD_DIR/$ROOT_SUBVOL"; then
+    error "$BUILD_DIR/$ROOT_SUBVOL is not a mountpoint!"
+  fi
+}
+
+install_base_system() {
+  log "Installing base system..."
+  local package_list="./profiles/$PROFILE/package-list.txt"
+
+  [[ -f "$package_list" ]] || error "Missing package list for profile $PROFILE."
+
+  pacstrap -cC "$PACMAN_CONFIG" "$BUILD_DIR/$ROOT_SUBVOL" $(< "$package_list") || error "pacstrap failed!"
+
   if [[ -d "./profiles/$PROFILE/overlay/rootfs" ]]; then
-    cp -r ./profiles/$PROFILE/overlay/rootfs/* "$WORK_DIR/mnt/"
-    chown -R root:root "$WORK_DIR/mnt/*"
+    cp -r ./profiles/$PROFILE/overlay/rootfs/* "$BUILD_DIR/$ROOT_SUBVOL/"
   fi
 
-  # Run profile-specific customizations if they exist
   if [[ -f "./profiles/$PROFILE/overlay/${PROFILE}-customizations.sh" ]]; then
-    bash "./profiles/$PROFILE/overlay/${PROFILE}-customizations.sh" "$WORK_DIR/mnt"
+    bash "./profiles/$PROFILE/overlay/${PROFILE}-customizations.sh" "$BUILD_DIR/$ROOT_SUBVOL"
   fi
 
-  # Configure the system inside chroot
-  arch-chroot "$WORK_DIR/mnt" /bin/bash <<EOF
+  [[ -f "$BUILD_DIR/$ROOT_SUBVOL/bin/bash" ]] || error "chroot setup failed."
+
+  arch-chroot "$BUILD_DIR/$ROOT_SUBVOL" /bin/bash <<EOF
 ln -sf /usr/share/zoneinfo/Region/City /etc/localtime
 hwclock --systohc
 locale-gen
@@ -99,61 +165,61 @@ echo "shani-os" > /etc/hostname
 EOF
 }
 
-# Finalize the image creation
-finalize_image() {
-  echo "Finalizing image..."
-  genfstab -U "$WORK_DIR/mnt" > "$WORK_DIR/mnt/etc/fstab"
-  umount -R "$WORK_DIR/mnt"
-  btrfs filesystem defragment -czstd "$IMAGE_FILE"
-  btrfs subvolume snapshot "$WORK_DIR/$TARGET_SUBVOL" "$WORK_DIR/snapshot"
-  btrfs send "$WORK_DIR/snapshot" > "$OUTPUT_DIR/$IMAGE_NAME"
+finalize_build() {
+  log "Finalizing build..."
+  genfstab -U "$BUILD_DIR/$ROOT_SUBVOL" > "$BUILD_DIR/$ROOT_SUBVOL/etc/fstab"
+  
+  log "Setting subvolume as read-only..."
+  btrfs property set -ts "$BUILD_DIR/$ROOT_SUBVOL" ro true || error "Failed to set subvolume read-only"
+  
+  log "Estimating subvolume size..."
+  SUBVOL_SIZE=$(btrfs subvolume show "$BUILD_DIR/$ROOT_SUBVOL" | grep "Referenced" | awk '{print $2}')
+
+  log "Compressing and storing snapshot..."
+  btrfs send "$BUILD_DIR/${ROOT_SUBVOL}" | pv -s "$SUBVOL_SIZE" | zstd --ultra --long=31 -T0 -22 -v > "$OUTPUT_DIR/$IMAGE_NAME"
 }
 
-# Cleanup temporary files
-cleanup() {
-  echo "Cleaning up..."
-  btrfs subvolume delete "$WORK_DIR/$TARGET_SUBVOL" || true
-  btrfs subvolume delete "$WORK_DIR/snapshot" || true
-  umount -R "$WORK_DIR" || true
-  rm -rf "$WORK_DIR/mnt" "$WORK_DIR.img"
-}
-
-# Generate zsync file
-generate_zsync() {
-  echo "Generating zsync file..."
-  zsyncmake -o "$OUTPUT_DIR/${IMAGE_NAME}.zsync" "$OUTPUT_DIR/$IMAGE_NAME"
-}
-
-# Upload files
-upload_files() {
-  echo "Uploading files..."
-  rsync -avz "$OUTPUT_DIR/${IMAGE_NAME}.zsync" "${SERVER_USER}@${SERVER_HOST}:${REMOTE_PATH}/"
-  rsync -avz "$OUTPUT_DIR/$IMAGE_NAME" "${SERVER_USER}@${SERVER_HOST}:${REMOTE_PATH}/"
-}
-
-# Print final message
-final_message() {
-  echo "Build complete. You can now download the image using zsync:"
-  echo "zsync ${SERVER_HOST}:${REMOTE_PATH}/${IMAGE_NAME}.zsync"
-}
-
-# Main function
-main() {
-  check_tools
-  prepare_environment
-  build_system
-  finalize_image
-  cleanup
-  generate_zsync
-
-  if [[ "${UPLOAD:-}" == true ]]; then
-    upload_files
-    final_message
+sign_image() {
+  if gpg --list-keys "$GPG_KEY_ID" &>/dev/null; then
+    log "Signing image..."
+    gpg --default-key "$GPG_KEY_ID" --detach-sign --armor "$OUTPUT_DIR/$IMAGE_NAME"
   else
-    echo "Build complete. To upload, use the -u flag."
+    error "GPG key not found. Cannot sign the image."
   fi
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  main "$@"
-fi
+generate_checksums() {
+  log "Generating SHA256 checksum..."
+  sha256sum "$OUTPUT_DIR/$IMAGE_NAME" > "$OUTPUT_DIR/${IMAGE_NAME}.sha256"
+}
+
+generate_zsync_file() {
+  log "Generating zsync file..."
+  zsyncmake -o "$OUTPUT_DIR/${IMAGE_NAME}.zsync" "$OUTPUT_DIR/$IMAGE_NAME"
+}
+
+update_latest_file() {
+  log "Updating latest.txt..."
+  echo "$IMAGE_NAME" > "$LATEST_FILE"
+}
+
+upload_build() {
+  log "Uploading build files..."
+  rsync -avz --progress "$OUTPUT_DIR/" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/"
+}
+
+main() {
+  check_dependencies
+  setup_environment
+  install_base_system
+  finalize_build
+  sign_image
+  generate_checksums
+  generate_zsync_file
+  update_latest_file
+
+  [[ "$UPLOAD" == true ]] && upload_build
+}
+
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"
+

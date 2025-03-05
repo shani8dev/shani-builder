@@ -35,7 +35,7 @@ jobs:
           mkdir -p shani-install-media/MOK
           echo "${{ secrets.MOK_KEY }}" > shani-install-media/mok/MOK.key
           echo "${{ secrets.MOK_CRT }}" > shani-install-media/mok/MOK.crt
-          echo "${{ secrets.MOK_DER }}" > shani-install-media/mok/MOK.der
+          echo "${{ secrets.MOK_DER }}" | base64 --decode > shani-install-media/mok/MOK.der
 
       - name: Build All Artifacts
         run: |

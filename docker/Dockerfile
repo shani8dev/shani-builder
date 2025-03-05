@@ -19,6 +19,7 @@ RUN pacman -Sy --noconfirm archlinux-keyring && \
 # Create build user and configure environment
 RUN useradd -m builduser || true && \
     mkdir -p /home/builduser/.gnupg && \
+    chmod 700 /home/builduser/.gnupg && \
     chown -R builduser:builduser /home/builduser/.gnupg && \
     echo 'builduser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
 

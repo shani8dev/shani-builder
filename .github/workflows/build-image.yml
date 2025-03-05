@@ -45,9 +45,15 @@ jobs:
           cd shani-install-media
           if [ "${{ github.event.inputs.upload_mode }}" = "all" ]; then
               echo "Building all artifacts for profile: ${{ github.event.inputs.profile }}"
+              sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" \
+              GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" \
+              GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
               sudo ./run_in_container.sh ./build.sh all -p "${{ github.event.inputs.profile }}"
           else
               echo "Building image artifacts for profile: ${{ github.event.inputs.profile }}"
+              sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" \
+              GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" \
+              GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
               sudo ./run_in_container.sh ./build.sh image -p "${{ github.event.inputs.profile }}"
           fi
 
@@ -62,5 +68,8 @@ jobs:
           cd shani-install-media
           echo "Uploading artifacts for profile: ${{ github.event.inputs.profile }}"
           MODE="${{ github.event.inputs.upload_mode }}"
+          sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" \
+          GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" \
+          GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
           sudo ./run_in_container.sh ./build.sh upload -p "${{ github.event.inputs.profile }}" $MODE
 

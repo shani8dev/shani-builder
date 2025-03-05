@@ -36,7 +36,7 @@ jobs:
       - name: Setup MOK keys
         run: |
           cd shani-install-media
-          mkdir -p MOK
+          mkdir -p mok
           echo "${{ secrets.MOK_KEY }}" > mok/MOK.key
           echo "${{ secrets.MOK_CRT }}" > mok/MOK.crt
           echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode > mok/MOK.der

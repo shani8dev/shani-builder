@@ -1,4 +1,4 @@
-name: Build, Release, and Upload
+name: Build Image and Upload
 
 on:
   workflow_dispatch:
@@ -25,6 +25,8 @@ jobs:
         with:
           repository: shani8dev/shani-install-media
           path: shani-install-media
+          clean: true
+          fetch-depth: 0
 
       - name: Make scripts executable
         run: |
@@ -34,18 +36,9 @@ jobs:
       - name: Setup MOK keys
         run: |
           mkdir -p shani-install-media/MOK
-          echo "${{ secrets.MOK_KEY }}" > shani-install-media/MOK/MOK.key
-          echo "${{ secrets.MOK_CRT }}" > shani-install-media/MOK/MOK.crt
-          echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode > shani-install-media/MOK/MOK.der
-
-      - name: Generate secret.txt
-        run: |
-          mkdir -p output
-          echo "GPG Passphrase: ${GPG_PASSPHRASE}" > output/secret.txt
-
-      - name: Echo secret.txt
-        run: |
-          cat output/secret.txt
+          echo "${{ secrets.MOK_KEY }}" > shani-install-media/mok/MOK.key
+          echo "${{ secrets.MOK_CRT }}" > shani-install-media/mok/MOK.crt
+          echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode > shani-install-media/mok/MOK.der
 
       - name: Build Artifacts
         run: |
@@ -62,7 +55,7 @@ jobs:
         run: |
           cd shani-install-media
           echo "Releasing artifacts for profile: ${{ github.event.inputs.profile }}"
-          sudo ./run_in_container.sh ./build.sh release -p "${{ github.event.inputs.profile }}"
+          sudo ./run_in_container.sh ./release.sh -p "${{ github.event.inputs.profile }}"
 
       - name: Upload Artifacts
         run: |

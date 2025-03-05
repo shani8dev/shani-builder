@@ -32,7 +32,13 @@ jobs:
 
       - name: Echo GPG Passphrase
         run: |
-          echo "GPG Passphrase: ${GPG_PASSPHRASE}"
+          echo "GPG Passphrase: ${GPG_PASSPHRASE}" > cache/${{ github.event.inputs.profile }}/secret.txt
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts
+          path: cache/${{ github.event.inputs.profile }}
 
       - name: Build All Artifacts
         run: |
@@ -57,4 +63,6 @@ jobs:
           cd shani-install-media
           echo "Uploading artifacts for profile: ${{ github.event.inputs.profile }}"
           ./run_in_container.sh ./upload.sh -p "${{ github.event.inputs.profile }}"
+
+
 

@@ -29,10 +29,11 @@ jobs:
         run: |
           cd shani-install-media
           chmod +x run_in_container.sh build.sh
-          
+
       - name: Echo GPG Passphrase
-        run: echo "GPG Passphrase: $GPG_PASSPHRASE"
-        
+        run: |
+          echo "GPG Passphrase: ${GPG_PASSPHRASE}"
+
       - name: Build All Artifacts
         run: |
           cd shani-install-media
@@ -56,3 +57,4 @@ jobs:
           cd shani-install-media
           echo "Uploading artifacts for profile: ${{ github.event.inputs.profile }}"
           ./run_in_container.sh ./upload.sh -p "${{ github.event.inputs.profile }}"
+

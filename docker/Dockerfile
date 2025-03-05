@@ -1,6 +1,3 @@
-# Dockerfile for building ShaniOS install-media
-# Based on Arch
-
 FROM archlinux:base-devel
 
 # Initialize and populate the keyring
@@ -25,9 +22,10 @@ RUN useradd -m builduser || true && \
     chown -R builduser:builduser /home/builduser/.gnupg && \
     echo 'builduser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
 
-# Set the working directory
-WORKDIR /builduser/build
+# Set working directory to builduser's home directory
+WORKDIR /home/builduser/build
 
-# Build pikaur packages as the 'build' user
+# Set environment variables (using builduser's GNUPGHOME)
 ENV BUILD_USER "builduser"
-ENV GNUPGHOME "/etc/pacman.d/gnupg"
+ENV GNUPGHOME "/home/builduser/.gnupg"
+

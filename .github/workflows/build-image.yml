@@ -29,7 +29,7 @@ jobs:
       - name: Make scripts executable
         run: |
           cd shani-install-media
-          chmod +x run_in_container.sh build.sh release.sh upload.sh
+          chmod +x run_in_container.sh build.sh
 
       - name: Setup MOK keys
         run: |
@@ -62,12 +62,12 @@ jobs:
         run: |
           cd shani-install-media
           echo "Releasing artifacts for profile: ${{ github.event.inputs.profile }}"
-          sudo ./run_in_container.sh ./release.sh -p "${{ github.event.inputs.profile }}"
+          sudo ./run_in_container.sh ./build.sh release -p "${{ github.event.inputs.profile }}"
 
       - name: Upload Artifacts
         run: |
           cd shani-install-media
           echo "Uploading artifacts for profile: ${{ github.event.inputs.profile }}"
           MODE="${{ github.event.inputs.upload_mode }}"
-          sudo ./run_in_container.sh ./upload.sh -p "${{ github.event.inputs.profile }}" $MODE
+          sudo ./run_in_container.sh ./build.sh upload -p "${{ github.event.inputs.profile }}" $MODE
 

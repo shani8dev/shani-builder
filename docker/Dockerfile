@@ -24,7 +24,8 @@ RUN useradd -m builduser || true && \
 
 # Set working directory to builduser's home directory
 WORKDIR /home/builduser/build
-
+USER builduser
+RUN gpg --keyserver keys.openpgp.org --recv-key 7B927BFFD4A9EAAA8B666B77DE217F3DA8014792
 # Set environment variables (using builduser's GNUPGHOME)
 ENV BUILD_USER "builduser"
 ENV GNUPGHOME "/home/builduser/.gnupg"

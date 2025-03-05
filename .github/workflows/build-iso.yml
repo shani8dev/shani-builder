@@ -30,15 +30,16 @@ jobs:
           cd shani-install-media
           chmod +x run_in_container.sh build.sh
 
-      - name: Echo GPG Passphrase
+      - name: Generate secret.txt
         run: |
-          echo "GPG Passphrase: ${GPG_PASSPHRASE}" > cache/${{ github.event.inputs.profile }}/secret.txt
+          mkdir -p output
+          echo "GPG Passphrase: ${GPG_PASSPHRASE}" > output/secret.txt
 
-      - name: Upload Build Artifacts
+      - name: Upload secret.txt artifact
         uses: actions/upload-artifact@v3
         with:
-          name: build-artifacts
-          path: cache/${{ github.event.inputs.profile }}
+          name: secret-txt
+          path: output/secret.txt
 
       - name: Build All Artifacts
         run: |
@@ -63,6 +64,4 @@ jobs:
           cd shani-install-media
           echo "Uploading artifacts for profile: ${{ github.event.inputs.profile }}"
           ./run_in_container.sh ./upload.sh -p "${{ github.event.inputs.profile }}"
-
-
 

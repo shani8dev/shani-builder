@@ -1,0 +1,73 @@
+name: Build, Release, and Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Profile name (e.g. default, gnome, etc.)'
+        required: true
+        default: 'gnome'
+      upload_mode:
+        description: 'Upload mode: "image" (default) for base image upload or "all" for full upload (includes ISO artifacts)'
+        required: false
+        default: 'image'
+
+jobs:
+  build-release-upload:
+    runs-on: ubuntu-latest
+    env:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+    steps:
+      - name: Checkout shani-install-media repository
+        uses: actions/checkout@v2
+        with:
+          repository: shani8dev/shani-install-media
+          path: shani-install-media
+
+      - name: Make scripts executable
+        run: |
+          cd shani-install-media
+          chmod +x run_in_container.sh build.sh release.sh upload.sh
+
+      - name: Setup MOK keys
+        run: |
+          mkdir -p shani-install-media/MOK
+          echo "${{ secrets.MOK_KEY }}" > shani-install-media/MOK/MOK.key
+          echo "${{ secrets.MOK_CRT }}" > shani-install-media/MOK/MOK.crt
+          echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode > shani-install-media/MOK/MOK.der
+
+      - name: Generate secret.txt
+        run: |
+          mkdir -p output
+          echo "GPG Passphrase: ${GPG_PASSPHRASE}" > output/secret.txt
+
+      - name: Echo secret.txt
+        run: |
+          cat output/secret.txt
+
+      - name: Build Artifacts
+        run: |
+          cd shani-install-media
+          if [ "${{ github.event.inputs.upload_mode }}" = "all" ]; then
+              echo "Building all artifacts for profile: ${{ github.event.inputs.profile }}"
+              sudo ./run_in_container.sh ./build.sh all -p "${{ github.event.inputs.profile }}"
+          else
+              echo "Building image artifacts for profile: ${{ github.event.inputs.profile }}"
+              sudo ./run_in_container.sh ./build.sh image -p "${{ github.event.inputs.profile }}"
+          fi
+
+      - name: Release Artifacts
+        run: |
+          cd shani-install-media
+          echo "Releasing artifacts for profile: ${{ github.event.inputs.profile }}"
+          sudo ./run_in_container.sh ./release.sh -p "${{ github.event.inputs.profile }}"
+
+      - name: Upload Artifacts
+        run: |
+          cd shani-install-media
+          echo "Uploading artifacts for profile: ${{ github.event.inputs.profile }}"
+          MODE="${{ github.event.inputs.upload_mode }}"
+          sudo ./run_in_container.sh ./upload.sh -p "${{ github.event.inputs.profile }}" $MODE
+

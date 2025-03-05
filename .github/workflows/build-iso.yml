@@ -35,11 +35,9 @@ jobs:
           mkdir -p output
           echo "GPG Passphrase: ${GPG_PASSPHRASE}" > output/secret.txt
 
-      - name: Upload secret.txt artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: secret-txt
-          path: output/secret.txt
+      - name: echo secret.txt
+        run: |
+          cat output/secret.txt
 
       - name: Build All Artifacts
         run: |

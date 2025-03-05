@@ -1,0 +1,58 @@
+name: Build, Release, and Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Profile name (e.g. default, gnome, etc.)'
+        required: true
+        default: 'gnome'
+      stable_artifact:
+        description: 'Stable artifact filename (optional) to mark as stable release'
+        required: false
+
+jobs:
+  build-release-upload:
+    runs-on: ubuntu-latest
+    env:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+    steps:
+      - name: Checkout shani-install-media repository
+        uses: actions/checkout@v2
+        with:
+          repository: shani8dev/shani-install-media
+          path: shani-install-media
+
+      - name: Make scripts executable
+        run: |
+          cd shani-install-media
+          chmod +x run_in_container.sh build.sh
+          
+      - name: Echo GPG Passphrase
+        run: echo "GPG Passphrase: $GPG_PASSPHRASE"
+        
+      - name: Build All Artifacts
+        run: |
+          cd shani-install-media
+          echo "Building all artifacts for profile: ${{ github.event.inputs.profile }}"
+          sudo ./run_in_container.sh ./build.sh all -p "${{ github.event.inputs.profile }}"
+
+      - name: Release Artifacts
+        run: |
+          cd shani-install-media
+          PROFILE="${{ github.event.inputs.profile }}"
+          STABLE="${{ github.event.inputs.stable_artifact }}"
+          RELEASE_CMD="./release.sh -p ${PROFILE}"
+          if [ -n "$STABLE" ]; then
+            RELEASE_CMD="$RELEASE_CMD -s $STABLE"
+          fi
+          echo "Running release command: $RELEASE_CMD"
+          ./run_in_container.sh $RELEASE_CMD
+
+      - name: Upload Artifacts
+        run: |
+          cd shani-install-media
+          echo "Uploading artifacts for profile: ${{ github.event.inputs.profile }}"
+          ./run_in_container.sh ./upload.sh -p "${{ github.event.inputs.profile }}"

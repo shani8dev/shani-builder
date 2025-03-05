@@ -30,14 +30,12 @@ jobs:
           cd shani-install-media
           chmod +x run_in_container.sh build.sh
 
-      - name: Generate secret.txt
+      - name: Setup MOK keys
         run: |
-          mkdir -p output
-          echo "GPG Passphrase: ${GPG_PASSPHRASE}" > output/secret.txt
-
-      - name: echo secret.txt
-        run: |
-          cat output/secret.txt
+          mkdir -p shani-install-media/MOK
+          echo "${{ secrets.MOK_KEY }}" > shani-install-media/mok/MOK.key
+          echo "${{ secrets.MOK_CRT }}" > shani-install-media/mok/MOK.crt
+          echo "${{ secrets.MOK_DER }}" > shani-install-media/mok/MOK.der
 
       - name: Build All Artifacts
         run: |
@@ -55,11 +53,11 @@ jobs:
             RELEASE_CMD="$RELEASE_CMD -s $STABLE"
           fi
           echo "Running release command: $RELEASE_CMD"
-          ./run_in_container.sh $RELEASE_CMD
+          sudo ./run_in_container.sh $RELEASE_CMD
 
       - name: Upload Artifacts
         run: |
           cd shani-install-media
           echo "Uploading artifacts for profile: ${{ github.event.inputs.profile }}"
-          ./run_in_container.sh ./upload.sh -p "${{ github.event.inputs.profile }}"
+          sudo ./run_in_container.sh ./upload.sh -p "${{ github.event.inputs.profile }}"
 

@@ -1,38 +1,34 @@
 name: Build Image and Upload
-
 on:
-  workflow_dispatch:
-    inputs:
-      profile:
-        description: 'Profile name (e.g. default, gnome, etc.)'
-        required: true
-        default: 'gnome'
-      upload_mode:
-        description: 'Upload mode: "image" (default) for base image upload or "all" for full upload (includes ISO artifacts)'
-        required: false
-        default: 'image'
+  schedule:
+    # Run every Saturday at 02:00 UTC
+    - cron: '0 2 * * 6'
 
 jobs:
   build-release-upload:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        profile: [gnome, plasma]
+      fail-fast: false  # Continue building other profiles even if one fails
     env:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
     steps:
       - name: Checkout shani-install-media repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4  # Updated to v4 for better performance
         with:
           repository: shani8dev/shani-install-media
           path: shani-install-media
           clean: true
           fetch-depth: 0
-
+      
       - name: Make scripts executable
         run: |
           cd shani-install-media
           chmod +x run_in_container.sh build.sh
-
+      
       - name: Setup MOK keys
         run: |
           cd shani-install-media
@@ -40,32 +36,28 @@ jobs:
           echo "${{ secrets.MOK_KEY }}" > mok/MOK.key
           echo "${{ secrets.MOK_CRT }}" > mok/MOK.crt
           echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode > mok/MOK.der
-
-      - name: Build Artifacts
+      
+      - name: Build Artifacts for ${{ matrix.profile }}
         run: |
           cd shani-install-media
-          if [ "${{ github.event.inputs.upload_mode }}" = "all" ]; then
-              echo "Building all artifacts for profile: ${{ github.event.inputs.profile }}"
-              sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
-              ./run_in_container.sh ./build.sh all -p "${{ github.event.inputs.profile }}"
-          else
-              echo "Building image artifacts for profile: ${{ github.event.inputs.profile }}"
-              sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
-              ./run_in_container.sh ./build.sh image -p "${{ github.event.inputs.profile }}"
-          fi
-
-      - name: Release Artifacts
-        run: |
-          cd shani-install-media
-          echo "Releasing artifacts for profile: ${{ github.event.inputs.profile }}"
+          echo "Building image artifacts for profile: ${{ matrix.profile }}"
           sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
-          ./run_in_container.sh ./build.sh release -p "${{ github.event.inputs.profile }}"
-
-      - name: Upload Artifacts
+          ./run_in_container.sh ./build.sh image -p "${{ matrix.profile }}"
+      
+      - name: Release Artifacts for ${{ matrix.profile }}
         run: |
           cd shani-install-media
-          echo "Uploading artifacts for profile: ${{ github.event.inputs.profile }}"
-          MODE="${{ github.event.inputs.upload_mode }}"
+          echo "Creating latest release for profile: ${{ matrix.profile }}"
           sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
-          ./run_in_container.sh ./build.sh upload -p "${{ github.event.inputs.profile }}" $MODE
-
+          ./run_in_container.sh ./build.sh release -p "${{ matrix.profile }}" latest
+          
+          echo "Creating stable release for profile: ${{ matrix.profile }}"
+          sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
+          ./run_in_container.sh ./build.sh release -p "${{ matrix.profile }}" stable
+      
+      - name: Upload Artifacts for ${{ matrix.profile }}
+        run: |
+          cd shani-install-media
+          echo "Uploading artifacts for profile: ${{ matrix.profile }}"
+          sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
+          ./run_in_container.sh ./build.sh upload -p "${{ matrix.profile }}" image

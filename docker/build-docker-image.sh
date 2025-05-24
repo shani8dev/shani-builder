@@ -18,4 +18,3 @@ docker tag shani-builder "${DOCKER_USERNAME}/shani-builder:latest"
 
 # Push the image to Docker Hub
 docker push "${DOCKER_USERNAME}/shani-builder:latest"
-

@@ -1,23 +1,24 @@
 name: Build Image and Upload
 on:
   schedule:
-    # Run every Saturday at 02:00 UTC
-    - cron: '0 2 * * 6'
+    # Every Friday 20:30 UTC → Saturday 2:00 AM IST
+    - cron: '30 20 * * 5'
 
 jobs:
   build-release-upload:
+    if: $(( github.run_number % 2 == 0 ))  # Run bi-weekly
     runs-on: ubuntu-latest
     strategy:
       matrix:
         profile: [gnome, plasma]
-      fail-fast: false  # Continue building other profiles even if one fails
+      fail-fast: false
     env:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
     steps:
       - name: Checkout shani-install-media repository
-        uses: actions/checkout@v4  # Updated to v4 for better performance
+        uses: actions/checkout@v4
         with:
           repository: shani8dev/shani-install-media
           path: shani-install-media
@@ -50,10 +51,6 @@ jobs:
           echo "Creating latest release for profile: ${{ matrix.profile }}"
           sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
           ./run_in_container.sh ./build.sh release -p "${{ matrix.profile }}" latest
-          
-          echo "Creating stable release for profile: ${{ matrix.profile }}"
-          sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
-          ./run_in_container.sh ./build.sh release -p "${{ matrix.profile }}" stable
       
       - name: Upload Artifacts for ${{ matrix.profile }}
         run: |
@@ -61,3 +58,4 @@ jobs:
           echo "Uploading artifacts for profile: ${{ matrix.profile }}"
           sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
           ./run_in_container.sh ./build.sh upload -p "${{ matrix.profile }}" image
+

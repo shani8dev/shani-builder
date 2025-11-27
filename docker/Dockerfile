@@ -13,7 +13,7 @@ RUN pacman -Sy --noconfirm archlinux-keyring && \
     pacman-key --populate archlinux && \
     pacman -Sy --noconfirm shani-keyring && \
     pacman --noconfirm -Syu && \
-    pacman --noconfirm -S --needed archiso git pacman-contrib btrfs-progs arch-install-scripts shim-signed sbsigntools mokutil mtools zsync rsync openssh flatpak snapd && \
+    pacman --noconfirm -S --needed archiso git pacman-contrib btrfs-progs arch-install-scripts shim-signed sbsigntools mokutil mtools zsync rsync openssh flatpak snapd systemd dbus && \
     pacman -Scc --noconfirm  # Clean package cache
 
 # Create build user and configure environment

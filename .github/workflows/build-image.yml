@@ -1,25 +1,24 @@
 name: Build Image and Upload
-
 on:
   workflow_dispatch: {}        # Manual trigger
   schedule:
     # Every Friday 20:30 UTC → Saturday 2:00 AM IST
     - cron: '30 20 * * 5'
-
 jobs:
   build-release-upload:
     runs-on: ubuntu-latest
-
     strategy:
       matrix:
         profile: [gnome, plasma]
       fail-fast: false
-
     env:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
     steps:
       - name: Checkout shani-install-media repository
         uses: actions/checkout@v4
@@ -49,6 +48,10 @@ jobs:
           sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" \
                    GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" \
                    GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
+                   R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID}" \
+                   R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY}" \
+                   R2_ACCOUNT_ID="${R2_ACCOUNT_ID}" \
+                   R2_BUCKET="${R2_BUCKET}" \
           ./run_in_container.sh ./build.sh image -p "${{ matrix.profile }}"
       
       - name: Release Artifacts for ${{ matrix.profile }}
@@ -58,6 +61,10 @@ jobs:
           sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" \
                    GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" \
                    GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
+                   R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID}" \
+                   R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY}" \
+                   R2_ACCOUNT_ID="${R2_ACCOUNT_ID}" \
+                   R2_BUCKET="${R2_BUCKET}" \
           ./run_in_container.sh ./build.sh release -p "${{ matrix.profile }}" latest
       
       - name: Upload Artifacts for ${{ matrix.profile }}
@@ -67,4 +74,8 @@ jobs:
           sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" \
                    GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" \
                    GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
+                   R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID}" \
+                   R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY}" \
+                   R2_ACCOUNT_ID="${R2_ACCOUNT_ID}" \
+                   R2_BUCKET="${R2_BUCKET}" \
           ./run_in_container.sh ./build.sh upload -p "${{ matrix.profile }}" image

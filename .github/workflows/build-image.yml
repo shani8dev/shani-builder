@@ -1,81 +1,85 @@
 name: Build Image and Upload
+
 on:
-  workflow_dispatch: {}        # Manual trigger
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Profile to build (leave empty for all)'
+        required: false
+        default: ''
+      promote_stable:
+        description: 'Promote latest to stable after upload'
+        required: false
+        type: boolean
+        default: false
   schedule:
     # Every Friday 20:30 UTC → Saturday 2:00 AM IST
     - cron: '30 20 * * 5'
+
 jobs:
   build-release-upload:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        profile: [gnome, plasma]
+        profile: ${{ fromJson(github.event.inputs.profile != '' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
       fail-fast: false
+
+    # All steps inherit these — no need to repeat on every sudo env call
     env:
-      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
+      GPG_PRIVATE_KEY:      ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE:       ${{ secrets.GPG_PASSPHRASE }}
+      R2_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCOUNT_ID:        ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET:            ${{ secrets.R2_BUCKET }}
+
     steps:
-      - name: Checkout shani-install-media repository
+      - name: Free disk space
+        # ubuntu-latest has ~14 GB free; the build needs 10 GB (base.img) +
+        # 14 GB (flatpak.img) + ISO temp space. Remove pre-installed bloat first.
+        run: |
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/lib/jvm \
+            /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY"
+          df -h /
+
+      - name: Checkout shani-install-media
         uses: actions/checkout@v4
         with:
           repository: shani8dev/shani-install-media
           path: shani-install-media
           clean: true
           fetch-depth: 0
-      
+
       - name: Make scripts executable
-        run: |
-          cd shani-install-media
-          chmod +x run_in_container.sh build.sh
-      
+        run: chmod +x shani-install-media/run_in_container.sh shani-install-media/build.sh
+
       - name: Setup MOK keys
         run: |
-          cd shani-install-media
-          mkdir -p mok
-          echo "${{ secrets.MOK_KEY }}" > mok/MOK.key
-          echo "${{ secrets.MOK_CRT }}" > mok/MOK.crt
-          echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode > mok/MOK.der
-      
-      - name: Build Artifacts for ${{ matrix.profile }}
-        run: |
-          cd shani-install-media
-          echo "Building image artifacts for profile: ${{ matrix.profile }}"
-          sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" \
-                   GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" \
-                   GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
-                   R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID}" \
-                   R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY}" \
-                   R2_ACCOUNT_ID="${R2_ACCOUNT_ID}" \
-                   R2_BUCKET="${R2_BUCKET}" \
-          ./run_in_container.sh ./build.sh image -p "${{ matrix.profile }}"
-      
-      - name: Release Artifacts for ${{ matrix.profile }}
-        run: |
-          cd shani-install-media
-          echo "Creating latest release for profile: ${{ matrix.profile }}"
-          sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" \
-                   GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" \
-                   GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
-                   R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID}" \
-                   R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY}" \
-                   R2_ACCOUNT_ID="${R2_ACCOUNT_ID}" \
-                   R2_BUCKET="${R2_BUCKET}" \
-          ./run_in_container.sh ./build.sh release -p "${{ matrix.profile }}" latest
-      
-      - name: Upload Artifacts for ${{ matrix.profile }}
-        run: |
-          cd shani-install-media
-          echo "Uploading artifacts for profile: ${{ matrix.profile }}"
-          sudo env SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" \
-                   GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY}" \
-                   GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
-                   R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID}" \
-                   R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY}" \
-                   R2_ACCOUNT_ID="${R2_ACCOUNT_ID}" \
-                   R2_BUCKET="${R2_BUCKET}" \
-          ./run_in_container.sh ./build.sh upload -p "${{ matrix.profile }}" image
+          mkdir -p shani-install-media/mok
+          echo "${{ secrets.MOK_KEY }}"          > shani-install-media/mok/MOK.key
+          echo "${{ secrets.MOK_CRT }}"          > shani-install-media/mok/MOK.crt
+          echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode > shani-install-media/mok/MOK.der
+
+      - name: Build base image — ${{ matrix.profile }}
+        working-directory: shani-install-media
+        run: sudo --preserve-env ./run_in_container.sh ./build.sh image -p "${{ matrix.profile }}"
+
+      - name: Create latest release pointer — ${{ matrix.profile }}
+        working-directory: shani-install-media
+        run: sudo --preserve-env ./run_in_container.sh ./build.sh release -p "${{ matrix.profile }}" latest
+
+      - name: Upload image artifacts — ${{ matrix.profile }}
+        working-directory: shani-install-media
+        run: sudo --preserve-env ./run_in_container.sh ./build.sh upload -p "${{ matrix.profile }}" image
+
+      - name: Promote latest to stable — ${{ matrix.profile }}
+        if: ${{ github.event.inputs.promote_stable == 'true' }}
+        working-directory: shani-install-media
+        run: sudo --preserve-env ./run_in_container.sh ./build.sh promote-stable -p "${{ matrix.profile }}"

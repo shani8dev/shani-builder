@@ -180,7 +180,7 @@ build_package() {
     log "$package_log_file" "Building new package: $pkgname version $pkgver"
     # Change ownership of PKGBUILD_DIR before running Docker
     chown -R "$(whoami):$(whoami)" "$PKGBUILD_DIR"
-    
+
     # Create temporary GPG key file
     echo "$GPG_PRIVATE_KEY" > ./gpg-private.key
 
@@ -196,24 +196,20 @@ build_package() {
         mkdir -p /home/builduser/.gnupg && \
         chown -R builduser:builduser /home/builduser/.gnupg
         chown -R builduser:builduser /pkg  # Change ownership of the /pkg directory
-        
+
         # Update the package database
         pacman -Sy --noconfirm git || { echo 'Failed to update package database'; exit 1; }
-        
+
         su - builduser -c \"
         		# Import the GPG private key
             echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo 'GPG private key import failed'; exit 1; }
             cd /pkg/$PKGBUILD_DIR || { echo 'Failed to change directory'; exit 1; }
-            
-            # Attempt to build the package
-            if ! makepkg -sc --noconfirm; then
-                echo 'Package build failed for $PKGBUILD_DIR'
-            fi
 
-            # Attempt to sign the package
-            if ! echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"${PKG_FILE}.sig\" --sign \"${PKG_FILE}\"; then
-                echo 'Signing failed for ${PKG_FILE}'
-            fi
+            # Attempt to build the package — exit so docker run propagates failure
+            makepkg -sc --noconfirm || { echo 'Package build failed for $PKGBUILD_DIR'; exit 1; }
+
+            # Attempt to sign the package — exit so docker run propagates failure
+            echo \"$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"${PKG_FILE}.sig\" --sign \"${PKG_FILE}\" || { echo 'Signing failed for ${PKG_FILE}'; exit 1; }
         \"
     "
 
@@ -260,9 +256,9 @@ update_database() {
           rm -f shani.db* shani.files*
           # Add packages to the repo database
           repo-add shani.db.tar.gz *.pkg.tar.zst
-          
+
           rm -f shani.db shani.files
-          
+
           # Copy the generated database files
           cp shani.db.tar.gz shani.db
           cp shani.files.tar.gz shani.files
@@ -320,9 +316,13 @@ cleanup_old_versions "$ARCH_DIR"
 
 # Loop through each PKGBUILD in the PKGBUILD repository and build packages
 log "Building and signing packages..."
+FAILED_PACKAGES=()
 for PKGBUILD_DIR in shani-pkgbuilds/*/; do
     if [ -f "$PKGBUILD_DIR/PKGBUILD" ]; then
-        build_package "$PKGBUILD_DIR"
+        if ! build_package "$PKGBUILD_DIR"; then
+            FAILED_PACKAGES+=("$PKGBUILD_DIR")
+            log "WARNING: build_package failed for $PKGBUILD_DIR — continuing with remaining packages"
+        fi
     else
         log "Skipping $PKGBUILD_DIR, no PKGBUILD found."
     fi
@@ -333,5 +333,13 @@ commit_and_push "shani-repo" "Update package repository with new builds"
 
 cleanup_ssh  # Cleanup SSH after repository cloning
 
-log "Build process completed successfully."
+# Report any failures and exit non-zero so CI shows a red run
+if [[ ${#FAILED_PACKAGES[@]} -gt 0 ]]; then
+    log "ERROR: The following packages failed to build:"
+    for pkg in "${FAILED_PACKAGES[@]}"; do
+        log "  - $pkg"
+    done
+    exit 1
+fi
 
+log "Build process completed successfully."

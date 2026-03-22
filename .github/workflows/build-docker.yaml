@@ -3,7 +3,11 @@ name: Build and Push Docker Image
 on:
   push:
     branches:
-      - main  # Change this to your default branch if necessary
+      - main
+    paths:
+      - 'docker/Dockerfile'
+      - 'docker/build-docker-image.sh'
+      - '.github/workflows/build-docker.yaml'
 
 jobs:
   build:
@@ -11,18 +15,39 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build Docker Image
+      - name: Generate image tags
+        id: meta
         run: |
-          chmod +x ./docker/build-docker-image.sh  # Make the script executable
-          ./docker/build-docker-image.sh  # Run the script
+          DATE=$(date +%Y%m%d)
+          SHA=${GITHUB_SHA::8}
+          echo "date=${DATE}" >> $GITHUB_OUTPUT
+          echo "sha=${SHA}"   >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile
+          push: true
+          # Tag with :latest, a date stamp, and the commit SHA so any version
+          # can be pulled back by date or commit for rollback purposes.
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/shani-builder:latest
+            ${{ secrets.DOCKER_USERNAME }}/shani-builder:${{ steps.meta.outputs.date }}
+            ${{ secrets.DOCKER_USERNAME }}/shani-builder:${{ steps.meta.outputs.sha }}
+          # Layer cache stored in the registry — avoids full re-download of
+          # Arch packages on every rebuild.
+          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/shani-builder:buildcache
+          cache-to:   type=registry,ref=${{ secrets.DOCKER_USERNAME }}/shani-builder:buildcache,mode=max
+          no-cache: false

@@ -6,17 +6,23 @@ on:
       profile:
         description: 'Profile to build (leave empty for all)'
         required: false
+        type: choice
+        options:
+          - ''
+          - gnome
+          - plasma
+          - cosmic
         default: ''
       build_mode:
-        description: 'Build mode: image (base image only) or full (image + flatpak + iso + repack)'
+        description: 'Build mode: all (image + release + upload) or full (all + iso + repack + upload all)'
         required: false
         type: choice
         options:
-          - image
+          - all
           - full
-        default: image
+        default: all
       promote_stable:
-        description: 'Promote latest to stable after upload'
+        description: 'Promote latest to stable after build completes'
         required: false
         type: boolean
         default: false
@@ -32,7 +38,6 @@ jobs:
         profile: ${{ fromJson(github.event.inputs.profile != '' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
       fail-fast: false
 
-    # All steps inherit these — no need to repeat on every sudo env call
     env:
       SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
       GPG_PRIVATE_KEY:      ${{ secrets.GPG_PRIVATE_KEY }}
@@ -45,8 +50,6 @@ jobs:
 
     steps:
       - name: Free disk space
-        # ubuntu-latest has ~14 GB free; the build needs 10 GB (base.img) +
-        # 14 GB (flatpak.img) + ISO temp space. Remove pre-installed bloat first.
         run: |
           sudo rm -rf \
             /usr/local/lib/android \
@@ -77,8 +80,6 @@ jobs:
           echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode  > shani-install-media/keys/mok/MOK.der
 
       - name: Setup GPG public key
-        # Export the public key from the private key secret so build-base-image.sh
-        # can embed it into the image at keys/gpg/gpg-public.asc.
         run: |
           mkdir -p shani-install-media/keys/gpg
           echo "${{ secrets.GPG_PRIVATE_KEY }}" \
@@ -88,34 +89,54 @@ jobs:
               --export "${{ secrets.GPG_KEY_ID }}" \
               > shani-install-media/keys/gpg/gpg-public.asc
 
-      # ── image mode (default / scheduled) ──────────────────────────────────
-      - name: Build base image — ${{ matrix.profile }}
-        if: ${{ github.event.inputs.build_mode != 'full' }}
+      # ── all mode (default / scheduled) ────────────────────────────────────
+      # Runs: image → release latest → upload image
+      - name: Build and upload — ${{ matrix.profile }}
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.build_mode != 'full' }}
         working-directory: shani-install-media
-        run: sudo --preserve-env ./run_in_container.sh ./build.sh image -p "${{ matrix.profile }}"
-
-      - name: Create latest release pointer — ${{ matrix.profile }}
-        if: ${{ github.event.inputs.build_mode != 'full' }}
-        working-directory: shani-install-media
-        run: sudo --preserve-env ./run_in_container.sh ./build.sh release -p "${{ matrix.profile }}" latest
-
-      - name: Upload image artifacts — ${{ matrix.profile }}
-        if: ${{ github.event.inputs.build_mode != 'full' }}
-        working-directory: shani-install-media
-        run: sudo --preserve-env ./run_in_container.sh ./build.sh upload -p "${{ matrix.profile }}" image
+        run: sudo --preserve-env ./run_in_container.sh ./build.sh all -p "${{ matrix.profile }}"
 
       # ── full mode (manual dispatch only) ──────────────────────────────────
+      # Runs: image → iso → repack → release latest → upload all
       - name: Full pipeline — ${{ matrix.profile }}
-        if: ${{ github.event.inputs.build_mode == 'full' }}
+        if: ${{ github.event_name != 'schedule' && github.event.inputs.build_mode == 'full' }}
         working-directory: shani-install-media
         run: sudo --preserve-env ./run_in_container.sh ./build.sh full -p "${{ matrix.profile }}"
 
-      # ── shared post-upload steps ───────────────────────────────────────────
+      # ── verify ────────────────────────────────────────────────────────────
       - name: Verify uploaded artifact — ${{ matrix.profile }}
         working-directory: shani-install-media
         run: sudo --preserve-env ./run_in_container.sh ./build.sh verify -p "${{ matrix.profile }}"
 
+  # ── promote-stable (runs after build completes, only if promote_stable is true) ──
+  promote-stable:
+    runs-on: ubuntu-latest
+    needs: build-release-upload
+    if: ${{ github.event.inputs.promote_stable == 'true' }}
+    strategy:
+      matrix:
+        profile: ${{ fromJson(github.event.inputs.profile != '' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
+      fail-fast: false
+
+    env:
+      SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
+      R2_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID:        ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET:            ${{ secrets.R2_BUCKET }}
+
+    steps:
+      - name: Checkout shani-install-media
+        uses: actions/checkout@v4
+        with:
+          repository: shani8dev/shani-install-media
+          path: shani-install-media
+          clean: true
+          fetch-depth: 0
+
+      - name: Make scripts executable
+        run: chmod +x shani-install-media/run_in_container.sh shani-install-media/build.sh
+
       - name: Promote latest to stable — ${{ matrix.profile }}
-        if: ${{ github.event.inputs.promote_stable == 'true' }}
         working-directory: shani-install-media
         run: sudo --preserve-env ./run_in_container.sh ./build.sh promote-stable -p "${{ matrix.profile }}"

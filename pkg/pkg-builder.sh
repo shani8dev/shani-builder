@@ -1,15 +1,21 @@
 #!/bin/bash
 
-set -euo pipefail  # Exit on error and treat unset variables as errors
+set -euo pipefail
 
-# Configuration variables
-readonly SSH_PRIVATE_KEY="${1:-${SSH_PRIVATE_KEY}}"
-readonly GPG_PASSPHRASE="${2:-${GPG_PASSPHRASE}}"
-readonly GPG_PRIVATE_KEY="${3:-${GPG_PRIVATE_KEY}}"
+# Credentials — read exclusively from environment variables.
+# Do NOT pass secrets as positional arguments; they appear in ps aux output.
+# Set SSH_PRIVATE_KEY, GPG_PASSPHRASE, and GPG_PRIVATE_KEY in the environment
+# before calling this script (GitHub Actions env: block, local .env, etc.).
+readonly SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY:-}"
+readonly GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
+readonly GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY:-}"
 readonly PKGBUILD_REPO_URL="git@github.com:shani8dev/shani-pkgbuilds.git"
 readonly PUBLIC_REPO_URL="git@github.com:shani8dev/shani-repo.git"
 readonly DB_UPDATE_FILE="./db_update.txt"  # File to track package updates
 readonly BASE_LOGFILE="./build_process.log"  # Initialize base log file
+
+# Ensure key files are always removed, even if the script exits early due to an error.
+trap 'rm -f ./gpg-private.key ./ssh-config/id_rsa' EXIT
 
 # Check essential environment variables
 for var in SSH_PRIVATE_KEY GPG_PASSPHRASE GPG_PRIVATE_KEY; do
@@ -168,16 +174,15 @@ build_package() {
     source "$PKGBUILD_DIR/PKGBUILD"
     local PKG_FILE="${pkgname}-${pkgver}-${pkgrel}-${arch}.pkg.tar.zst"
     local PKG_SIG="${PKG_FILE}.sig"
-    local package_log_file="./build_${pkgname}.log"
     local db_update_required=false
 
     # Check if package already exists in public repo with matching version
     if [[ -f "$ARCH_DIR/$PKG_FILE" && -f "$ARCH_DIR/$PKG_SIG" ]]; then
-        log "$package_log_file" "Package $PKG_FILE and $PKG_SIG already exists, skipping build..."
+        log "Package $PKG_FILE and $PKG_SIG already exist in repo — skipping build."
         return
     fi
 
-    log "$package_log_file" "Building new package: $pkgname version $pkgver"
+    log "Building new package: $pkgname version $pkgver"
     # Change ownership of PKGBUILD_DIR before running Docker
     chown -R "$(whoami):$(whoami)" "$PKGBUILD_DIR"
 

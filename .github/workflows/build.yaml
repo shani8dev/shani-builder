@@ -11,15 +11,22 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # Pass secrets as environment variables — never as positional shell arguments,
+    # which would expose them in ps aux output and the runner process list.
+    env:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Download build script
         run: |
-          curl -L -o pkg-builder.sh https://raw.githubusercontent.com/shani8dev/shani-builder/refs/heads/main/pkg/pkg-builder.sh
-          chmod +x pkg-builder.sh  # Make sure your script is executable
+          curl -L -o pkg-builder.sh \
+            https://raw.githubusercontent.com/shani8dev/shani-builder/refs/heads/main/pkg/pkg-builder.sh
+          chmod +x pkg-builder.sh
 
       - name: Run build script
-        run: sudo ./pkg-builder.sh "${{ secrets.SSH_PRIVATE_KEY }}" "${{ secrets.GPG_PASSPHRASE }}" "${{ secrets.GPG_PRIVATE_KEY }}"
-
+        run: sudo --preserve-env pkg-builder.sh

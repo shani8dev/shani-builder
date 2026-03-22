@@ -7,6 +7,14 @@ on:
         description: 'Profile to build (leave empty for all)'
         required: false
         default: ''
+      build_mode:
+        description: 'Build mode: image (base image only) or full (image + flatpak + iso + repack)'
+        required: false
+        type: choice
+        options:
+          - image
+          - full
+        default: image
       promote_stable:
         description: 'Promote latest to stable after upload'
         required: false
@@ -29,6 +37,7 @@ jobs:
       SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
       GPG_PRIVATE_KEY:      ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PASSPHRASE:       ${{ secrets.GPG_PASSPHRASE }}
+      GPG_KEY_ID:           ${{ secrets.GPG_KEY_ID }}
       R2_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       R2_ACCOUNT_ID:        ${{ secrets.R2_ACCOUNT_ID }}
@@ -62,22 +71,37 @@ jobs:
 
       - name: Setup MOK keys
         run: |
-          mkdir -p shani-install-media/mok
-          echo "${{ secrets.MOK_KEY }}"          > shani-install-media/mok/MOK.key
-          echo "${{ secrets.MOK_CRT }}"          > shani-install-media/mok/MOK.crt
-          echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode > shani-install-media/mok/MOK.der
+          mkdir -p shani-install-media/keys/mok
+          echo "${{ secrets.MOK_KEY }}"                    > shani-install-media/keys/mok/MOK.key
+          echo "${{ secrets.MOK_CRT }}"                    > shani-install-media/keys/mok/MOK.crt
+          echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode > shani-install-media/keys/mok/MOK.der
 
+      # ── image mode (default / scheduled) ──────────────────────────────────
       - name: Build base image — ${{ matrix.profile }}
+        if: ${{ github.event.inputs.build_mode != 'full' }}
         working-directory: shani-install-media
         run: sudo --preserve-env ./run_in_container.sh ./build.sh image -p "${{ matrix.profile }}"
 
       - name: Create latest release pointer — ${{ matrix.profile }}
+        if: ${{ github.event.inputs.build_mode != 'full' }}
         working-directory: shani-install-media
         run: sudo --preserve-env ./run_in_container.sh ./build.sh release -p "${{ matrix.profile }}" latest
 
       - name: Upload image artifacts — ${{ matrix.profile }}
+        if: ${{ github.event.inputs.build_mode != 'full' }}
         working-directory: shani-install-media
         run: sudo --preserve-env ./run_in_container.sh ./build.sh upload -p "${{ matrix.profile }}" image
+
+      # ── full mode (manual dispatch only) ──────────────────────────────────
+      - name: Full pipeline — ${{ matrix.profile }}
+        if: ${{ github.event.inputs.build_mode == 'full' }}
+        working-directory: shani-install-media
+        run: sudo --preserve-env ./run_in_container.sh ./build.sh full -p "${{ matrix.profile }}"
+
+      # ── shared post-upload steps ───────────────────────────────────────────
+      - name: Verify uploaded artifact — ${{ matrix.profile }}
+        working-directory: shani-install-media
+        run: sudo --preserve-env ./run_in_container.sh ./build.sh verify -p "${{ matrix.profile }}"
 
       - name: Promote latest to stable — ${{ matrix.profile }}
         if: ${{ github.event.inputs.promote_stable == 'true' }}

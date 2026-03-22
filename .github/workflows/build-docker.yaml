@@ -51,3 +51,13 @@ jobs:
           cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/shani-builder:buildcache
           cache-to:   type=registry,ref=${{ secrets.DOCKER_USERNAME }}/shani-builder:buildcache,mode=max
           no-cache: false
+
+      - name: Write job summary
+        run: |
+          echo "## Docker image pushed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| latest | \`${{ secrets.DOCKER_USERNAME }}/shani-builder:latest\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| date   | \`${{ secrets.DOCKER_USERNAME }}/shani-builder:${{ steps.meta.outputs.date }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| sha    | \`${{ secrets.DOCKER_USERNAME }}/shani-builder:${{ steps.meta.outputs.sha }}\` |" >> $GITHUB_STEP_SUMMARY

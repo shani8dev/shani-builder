@@ -72,9 +72,21 @@ jobs:
       - name: Setup MOK keys
         run: |
           mkdir -p shani-install-media/keys/mok
-          echo "${{ secrets.MOK_KEY }}"                    > shani-install-media/keys/mok/MOK.key
-          echo "${{ secrets.MOK_CRT }}"                    > shani-install-media/keys/mok/MOK.crt
-          echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode > shani-install-media/keys/mok/MOK.der
+          echo "${{ secrets.MOK_KEY }}"                        > shani-install-media/keys/mok/MOK.key
+          echo "${{ secrets.MOK_CRT }}"                        > shani-install-media/keys/mok/MOK.crt
+          echo "${{ secrets.MOK_DER_B64 }}" | base64 --decode  > shani-install-media/keys/mok/MOK.der
+
+      - name: Setup GPG public key
+        # Export the public key from the private key secret so build-base-image.sh
+        # can embed it into the image at keys/gpg/gpg-public.asc.
+        run: |
+          mkdir -p shani-install-media/keys/gpg
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" \
+            | gpg --batch --import
+          gpg --batch \
+              --armor \
+              --export "${{ secrets.GPG_KEY_ID }}" \
+              > shani-install-media/keys/gpg/gpg-public.asc
 
       # ── image mode (default / scheduled) ──────────────────────────────────
       - name: Build base image — ${{ matrix.profile }}

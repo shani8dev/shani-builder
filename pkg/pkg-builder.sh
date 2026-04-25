@@ -49,13 +49,15 @@ done
 # ---------------------------------------------------------------------------
 # Architecture → repo subdirectory
 # ---------------------------------------------------------------------------
-readonly ARCH
-ARCH="$(uname -m)"
-case "$ARCH" in
-    x86_64)         ARCH_DIR="./shani-repo/x86_64" ;;
-    armv7l|aarch64) ARCH_DIR="./shani-repo/arm"    ;;
-    *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;;
+# Do NOT declare ARCH as readonly — sudo may inherit it as readonly from the
+# runner environment, causing "readonly variable" on assignment.
+_ARCH="$(uname -m)"
+case "$_ARCH" in
+    x86_64)         readonly ARCH_DIR="./shani-repo/x86_64" ;;
+    armv7l|aarch64) readonly ARCH_DIR="./shani-repo/arm"    ;;
+    *) echo "Unsupported architecture: ${_ARCH}" >&2; exit 1 ;;
 esac
+unset _ARCH
 
 # ---------------------------------------------------------------------------
 # Docker — already present on GitHub runners; this is a safety net for local use

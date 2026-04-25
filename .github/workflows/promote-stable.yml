@@ -46,18 +46,37 @@ jobs:
           path: shani-install-media
           fetch-depth: 0
 
-      - name: Install rclone
-        # rclone is not pre-installed on ubuntu-latest; needed for R2 operations.
-        # Non-fatal so the step doesn't block the job if only SF upload is required
-        # and R2_BUCKET is not set — promote-stable.sh handles missing rclone gracefully.
-        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+      - name: Pull builder image
+        run: docker pull shrinivasvkumbhar/shani-builder:latest || true
 
-      - name: Configure rclone for Cloudflare R2
+      - name: Promote latest to stable — ${{ matrix.profile }}
+        # Run entirely inside shani-builder, which already has rclone, openssh,
+        # and rsync installed. SSH and rclone are configured inside the container
+        # as root, so there is no sudo path confusion and no need to install tools.
+        # Secrets are forwarded via -e — never interpolated into the command string.
         run: |
-          mkdir -p "$HOME/.config/rclone"
-          # Heredoc must start at column 0 — leading spaces corrupt ini key names
-          # and cause rclone to silently reject the config, producing auth errors.
-          cat > "$HOME/.config/rclone/rclone.conf" <<EOF
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/shani-install-media:/work" \
+            -e SSH_PRIVATE_KEY \
+            -e R2_ACCESS_KEY_ID \
+            -e R2_SECRET_ACCESS_KEY \
+            -e R2_ACCOUNT_ID \
+            -e R2_BUCKET \
+            shrinivasvkumbhar/shani-builder:latest \
+            bash -euo pipefail -c '
+              # ── SSH ──────────────────────────────────────────────────────
+              mkdir -p /root/.ssh
+              printf "%s\n" "$SSH_PRIVATE_KEY" > /root/.ssh/id_rsa
+              chmod 600 /root/.ssh/id_rsa
+              ssh-keyscan -H sourceforge.net >> /root/.ssh/known_hosts 2>/dev/null || true
+              chmod 644 /root/.ssh/known_hosts
+              printf "Host *\n    StrictHostKeyChecking no\n    BatchMode yes\n" \
+                > /root/.ssh/config
+              chmod 600 /root/.ssh/config
+
+              # ── rclone ───────────────────────────────────────────────────
+              mkdir -p /root/.config/rclone
+              cat > /root/.config/rclone/rclone.conf << RCLONECFG
 [r2]
 type = s3
 provider = Cloudflare
@@ -66,30 +85,9 @@ secret_access_key = ${R2_SECRET_ACCESS_KEY}
 endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
 acl = private
 no_check_bucket = true
-EOF
+RCLONECFG
 
-      - name: Configure SSH for SourceForge
-        run: |
-          mkdir -p "$HOME/.ssh"
-          # printf '%s\n' is safer than echo — does not interpret escape sequences
-          # or backslashes that may appear in the key material.
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_rsa"
-          chmod 600 "$HOME/.ssh/id_rsa"
-          # || true: ssh-keyscan exits non-zero on transient DNS failures; the
-          # known_hosts file is still written with whatever it did resolve, so the
-          # step should not be fatal.
-          ssh-keyscan -H sourceforge.net >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
-          chmod 644 "$HOME/.ssh/known_hosts"
-          # Single-quoted format string avoids shell expanding \n before printf sees it.
-          printf 'Host *\n    StrictHostKeyChecking no\n    BatchMode yes\n' \
-            > "$HOME/.ssh/config"
-          # SSH ignores config files with permissions looser than 600.
-          chmod 600 "$HOME/.ssh/config"
-
-      - name: Make scripts executable
-        run: chmod +x shani-install-media/scripts/promote-stable.sh
-
-      - name: Promote latest to stable — ${{ matrix.profile }}
-        working-directory: shani-install-media
-        # Absolute path so sudo can locate the script after resetting $PWD.
-        run: sudo --preserve-env bash "$GITHUB_WORKSPACE/shani-install-media/scripts/promote-stable.sh" -p "${{ matrix.profile }}"
+              # ── promote ──────────────────────────────────────────────────
+              chmod +x /work/scripts/promote-stable.sh
+              exec /work/scripts/promote-stable.sh -p "'"${{ matrix.profile }}"'"
+            '

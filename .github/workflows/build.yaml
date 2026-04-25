@@ -43,7 +43,7 @@ jobs:
         run: docker pull shrinivasvkumbhar/shani-builder:latest || true
 
       - name: Run build script
-        # Reference the checked-out local copy instead of downloading from
-        # raw.githubusercontent.com — uses the exact version that triggered
-        # this run and works correctly on non-main branches during testing.
-        run: sudo --preserve-env ./pkg/pkg-builder.sh
+        # Use an absolute path via $GITHUB_WORKSPACE so sudo can locate the
+        # script regardless of how it resets $PWD, and invoke it with bash
+        # explicitly to avoid any execute-bit or shebang-resolution issues.
+        run: sudo --preserve-env bash "$GITHUB_WORKSPACE/pkg/pkg-builder.sh"

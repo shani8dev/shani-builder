@@ -54,30 +54,42 @@ jobs:
 
       - name: Configure rclone for Cloudflare R2
         run: |
-          mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [r2]
-          type = s3
-          provider = Cloudflare
-          access_key_id = ${{ secrets.R2_ACCESS_KEY_ID }}
-          secret_access_key = ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          endpoint = https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          acl = private
-          no_check_bucket = true
-          EOF
+          mkdir -p "$HOME/.config/rclone"
+          # Heredoc must start at column 0 — leading spaces corrupt ini key names
+          # and cause rclone to silently reject the config, producing auth errors.
+          cat > "$HOME/.config/rclone/rclone.conf" <<EOF
+[r2]
+type = s3
+provider = Cloudflare
+access_key_id = ${R2_ACCESS_KEY_ID}
+secret_access_key = ${R2_SECRET_ACCESS_KEY}
+endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+acl = private
+no_check_bucket = true
+EOF
 
       - name: Configure SSH for SourceForge
         run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H sourceforge.net >> ~/.ssh/known_hosts 2>/dev/null
-          chmod 644 ~/.ssh/known_hosts
-          printf "Host *\n    StrictHostKeyChecking no\n    BatchMode yes\n" > ~/.ssh/config
+          mkdir -p "$HOME/.ssh"
+          # printf '%s\n' is safer than echo — does not interpret escape sequences
+          # or backslashes that may appear in the key material.
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_rsa"
+          chmod 600 "$HOME/.ssh/id_rsa"
+          # || true: ssh-keyscan exits non-zero on transient DNS failures; the
+          # known_hosts file is still written with whatever it did resolve, so the
+          # step should not be fatal.
+          ssh-keyscan -H sourceforge.net >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+          chmod 644 "$HOME/.ssh/known_hosts"
+          # Single-quoted format string avoids shell expanding \n before printf sees it.
+          printf 'Host *\n    StrictHostKeyChecking no\n    BatchMode yes\n' \
+            > "$HOME/.ssh/config"
+          # SSH ignores config files with permissions looser than 600.
+          chmod 600 "$HOME/.ssh/config"
 
       - name: Make scripts executable
         run: chmod +x shani-install-media/scripts/promote-stable.sh
 
       - name: Promote latest to stable — ${{ matrix.profile }}
         working-directory: shani-install-media
-        run: sudo --preserve-env ./scripts/promote-stable.sh -p "${{ matrix.profile }}"
+        # Absolute path so sudo can locate the script after resetting $PWD.
+        run: sudo --preserve-env bash "$GITHUB_WORKSPACE/shani-install-media/scripts/promote-stable.sh" -p "${{ matrix.profile }}"

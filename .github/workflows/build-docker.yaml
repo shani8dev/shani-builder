@@ -40,9 +40,9 @@ jobs:
         run: |
           DATE=$(date +%Y%m%d)
           SHA=${GITHUB_SHA::8}
-          echo "date=${DATE}" >> $GITHUB_OUTPUT
-          echo "sha=${SHA}"   >> $GITHUB_OUTPUT
-          echo "repo=${{ secrets.DOCKER_USERNAME }}/shani-builder" >> $GITHUB_OUTPUT
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}"   >> "$GITHUB_OUTPUT"
+          echo "repo=${{ secrets.DOCKER_USERNAME }}/shani-builder" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -66,10 +66,10 @@ jobs:
           REPO="${{ steps.meta.outputs.repo }}"
           DATE="${{ steps.meta.outputs.date }}"
           SHA="${{ steps.meta.outputs.sha }}"
-          echo "## Docker image pushed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| latest | \`${REPO}:latest\` |"    >> $GITHUB_STEP_SUMMARY
-          echo "| date   | \`${REPO}:${DATE}\` |"   >> $GITHUB_STEP_SUMMARY
-          echo "| sha    | \`${REPO}:${SHA}\` |"    >> $GITHUB_STEP_SUMMARY
+          echo "## Docker image pushed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tag | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| latest | \`${REPO}:latest\` |"    >> "$GITHUB_STEP_SUMMARY"
+          echo "| date   | \`${REPO}:${DATE}\` |"   >> "$GITHUB_STEP_SUMMARY"
+          echo "| sha    | \`${REPO}:${SHA}\` |"    >> "$GITHUB_STEP_SUMMARY"

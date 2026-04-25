@@ -52,8 +52,8 @@ done
 readonly ARCH
 ARCH="$(uname -m)"
 case "$ARCH" in
-    x86_64)        ARCH_DIR="./shani-repo/x86_64" ;;
-    armv7l|aarch64) ARCH_DIR="./shani-repo/arm"   ;;
+    x86_64)         ARCH_DIR="./shani-repo/x86_64" ;;
+    armv7l|aarch64) ARCH_DIR="./shani-repo/arm"    ;;
     *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;;
 esac
 
@@ -83,6 +83,8 @@ install_docker() {
 setup_ssh() {
     log "Setting up SSH..."
     local key_file="${SSH_DIR}/id_rsa"
+    # printf '%s\n' is safer than echo — does not misinterpret backslashes or
+    # -n/-e flags that might appear in certain key formats.
     printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "${key_file}"
     chmod 600 "${key_file}"
     cat > "${SSH_DIR}/config" <<EOF

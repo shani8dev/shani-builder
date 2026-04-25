@@ -83,6 +83,24 @@ jobs:
           printf '%s\n' "${{ secrets.MOK_DER_B64 }}" | base64 --decode \
             > shani-install-media/keys/mok/MOK.der
 
+      - name: Export GPG public key
+        # The public key must be present on the host at keys/gpg/gpg-public.asc
+        # before run_in_container.sh mounts the directory, so the build scripts
+        # can copy it into the image/ISO at build time.
+        # An isolated GNUPGHOME is used so the import does not touch the runner's
+        # system keyring and is discarded automatically when the step exits.
+        run: |
+          mkdir -p shani-install-media/keys/gpg
+          TMPGNUPG="$(mktemp -d)"
+          chmod 700 "$TMPGNUPG"
+          printf '%s\n' "$GPG_PRIVATE_KEY" \
+            | gpg --homedir "$TMPGNUPG" --batch --import
+          gpg --homedir "$TMPGNUPG" \
+              --batch --armor \
+              --export "$GPG_KEY_ID" \
+              > shani-install-media/keys/gpg/gpg-public.asc
+          rm -rf "$TMPGNUPG"
+
       # run_in_container.sh handles: docker pull, SSH setup, GPG import,
       # and rclone config — all inside the shani-builder container.
       # build.sh dispatches to the correct sub-scripts based on the command.

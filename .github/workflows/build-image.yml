@@ -21,22 +21,28 @@ on:
           - all
           - full
         default: all
-      promote_stable:
-        description: 'Promote latest to stable after build completes'
-        required: false
-        type: boolean
-        default: false
   schedule:
     # Every Friday 20:30 UTC → Saturday 2:00 AM IST
     - cron: '30 20 * * 5'
 
+# Only one build pipeline runs at a time. A second trigger while a build is
+# in-flight is queued rather than cancelled — we don't want to drop a scheduled
+# build just because a manual dispatch arrived at the same time.
+concurrency:
+  group: image-build
+  cancel-in-progress: false
+
 jobs:
   build-release-upload:
     runs-on: ubuntu-latest
+    timeout-minutes: 360  # full pipeline (image + ISO) can take up to 5–6 hours
     strategy:
       matrix:
         profile: ${{ fromJson(github.event.inputs.profile != '' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
       fail-fast: false
+
+    permissions:
+      contents: read
 
     env:
       SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
@@ -82,12 +88,18 @@ jobs:
       - name: Setup GPG public key
         run: |
           mkdir -p shani-install-media/keys/gpg
+          # Use an isolated GNUPGHOME so the import doesn't touch the runner's
+          # system keyring and is automatically discarded after the job exits.
+          TMPGNUPG="$(mktemp -d)"
+          chmod 700 "$TMPGNUPG"
           echo "${{ secrets.GPG_PRIVATE_KEY }}" \
-            | gpg --batch --import
-          gpg --batch \
+            | gpg --homedir "$TMPGNUPG" --batch --import
+          gpg --homedir "$TMPGNUPG" \
+              --batch \
               --armor \
               --export "${{ secrets.GPG_KEY_ID }}" \
               > shani-install-media/keys/gpg/gpg-public.asc
+          rm -rf "$TMPGNUPG"
 
       # ── all mode (default / scheduled) ────────────────────────────────────
       # Runs: image → release latest → upload image
@@ -107,36 +119,3 @@ jobs:
       - name: Verify uploaded artifact — ${{ matrix.profile }}
         working-directory: shani-install-media
         run: sudo --preserve-env ./run_in_container.sh ./build.sh verify -p "${{ matrix.profile }}"
-
-  # ── promote-stable (runs after build completes, only if promote_stable is true) ──
-  promote-stable:
-    runs-on: ubuntu-latest
-    needs: build-release-upload
-    if: ${{ github.event.inputs.promote_stable == 'true' }}
-    strategy:
-      matrix:
-        profile: ${{ fromJson(github.event.inputs.profile != '' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
-      fail-fast: false
-
-    env:
-      SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
-      R2_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      R2_ACCOUNT_ID:        ${{ secrets.R2_ACCOUNT_ID }}
-      R2_BUCKET:            ${{ secrets.R2_BUCKET }}
-
-    steps:
-      - name: Checkout shani-install-media
-        uses: actions/checkout@v4
-        with:
-          repository: shani8dev/shani-install-media
-          path: shani-install-media
-          clean: true
-          fetch-depth: 0
-
-      - name: Make scripts executable
-        run: chmod +x shani-install-media/run_in_container.sh shani-install-media/build.sh
-
-      - name: Promote latest to stable — ${{ matrix.profile }}
-        working-directory: shani-install-media
-        run: sudo --preserve-env ./run_in_container.sh ./build.sh promote-stable -p "${{ matrix.profile }}"

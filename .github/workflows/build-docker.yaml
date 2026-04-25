@@ -5,13 +5,22 @@ on:
     branches:
       - main
     paths:
-      - 'docker/Dockerfile'
-      - 'docker/build-docker-image.sh'
+      - 'docker/**'
       - '.github/workflows/build-docker.yaml'
+
+# Cancel a queued build if a newer push arrives before it starts.
+# The running build is allowed to finish so we never push a half-built image.
+concurrency:
+  group: docker-build
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -33,9 +42,10 @@ jobs:
           SHA=${GITHUB_SHA::8}
           echo "date=${DATE}" >> $GITHUB_OUTPUT
           echo "sha=${SHA}"   >> $GITHUB_OUTPUT
+          echo "repo=${{ secrets.DOCKER_USERNAME }}/shani-builder" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ./docker
           file: ./docker/Dockerfile
@@ -43,21 +53,23 @@ jobs:
           # Tag with :latest, a date stamp, and the commit SHA so any version
           # can be pulled back by date or commit for rollback purposes.
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/shani-builder:latest
-            ${{ secrets.DOCKER_USERNAME }}/shani-builder:${{ steps.meta.outputs.date }}
-            ${{ secrets.DOCKER_USERNAME }}/shani-builder:${{ steps.meta.outputs.sha }}
+            ${{ steps.meta.outputs.repo }}:latest
+            ${{ steps.meta.outputs.repo }}:${{ steps.meta.outputs.date }}
+            ${{ steps.meta.outputs.repo }}:${{ steps.meta.outputs.sha }}
           # Layer cache stored in the registry — avoids full re-download of
           # Arch packages on every rebuild.
-          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/shani-builder:buildcache
-          cache-to:   type=registry,ref=${{ secrets.DOCKER_USERNAME }}/shani-builder:buildcache,mode=max
-          no-cache: false
+          cache-from: type=registry,ref=${{ steps.meta.outputs.repo }}:buildcache
+          cache-to:   type=registry,ref=${{ steps.meta.outputs.repo }}:buildcache,mode=max
 
       - name: Write job summary
         run: |
+          REPO="${{ steps.meta.outputs.repo }}"
+          DATE="${{ steps.meta.outputs.date }}"
+          SHA="${{ steps.meta.outputs.sha }}"
           echo "## Docker image pushed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Tag | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| latest | \`${{ secrets.DOCKER_USERNAME }}/shani-builder:latest\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| date   | \`${{ secrets.DOCKER_USERNAME }}/shani-builder:${{ steps.meta.outputs.date }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| sha    | \`${{ secrets.DOCKER_USERNAME }}/shani-builder:${{ steps.meta.outputs.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| latest | \`${REPO}:latest\` |"    >> $GITHUB_STEP_SUMMARY
+          echo "| date   | \`${REPO}:${DATE}\` |"   >> $GITHUB_STEP_SUMMARY
+          echo "| sha    | \`${REPO}:${SHA}\` |"    >> $GITHUB_STEP_SUMMARY

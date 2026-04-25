@@ -4,12 +4,25 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'pkg/pkg-builder.sh'
+      - '.github/workflows/build.yaml'
   schedule:
-    - cron: '0 0 * * *'  # Runs every day at midnight UTC
+    - cron: '0 0 * * *'  # Daily at midnight UTC
+
+# Cancel an in-progress run of this workflow if a newer one starts,
+# preventing two builds from writing to shani-repo simultaneously.
+concurrency:
+  group: pkg-build
+  cancel-in-progress: false  # let the running build finish; queue the new one
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    permissions:
+      contents: read
 
     # Pass secrets as environment variables — never as positional shell arguments,
     # which would expose them in ps aux output and the runner process list.
@@ -22,11 +35,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download build script
-        run: |
-          curl -L -o pkg-builder.sh \
-            https://raw.githubusercontent.com/shani8dev/shani-builder/refs/heads/main/pkg/pkg-builder.sh
-          chmod +x pkg-builder.sh
+      - name: Pull builder image
+        # Pre-pull the build container so the cold-pull latency does not sit
+        # silently inside pkg-builder.sh where it is hard to time or retry.
+        # Non-fatal: if Docker Hub is temporarily unavailable the script will
+        # attempt its own pull and cached layer reuse still applies either way.
+        run: docker pull shrinivasvkumbhar/shani-builder:latest || true
 
       - name: Run build script
-        run: sudo --preserve-env ./pkg-builder.sh
+        # Reference the checked-out local copy instead of downloading from
+        # raw.githubusercontent.com — uses the exact version that triggered
+        # this run and works correctly on non-main branches during testing.
+        run: sudo --preserve-env ./pkg/pkg-builder.sh

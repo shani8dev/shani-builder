@@ -25,9 +25,6 @@ on:
     # Every Friday 20:30 UTC → Saturday 2:00 AM IST
     - cron: '30 20 * * 5'
 
-# Only one build pipeline runs at a time. A second trigger while a build is
-# in-flight is queued rather than cancelled — we don't want to drop a scheduled
-# build just because a manual dispatch arrived at the same time.
 concurrency:
   group: image-build
   cancel-in-progress: false
@@ -35,7 +32,7 @@ concurrency:
 jobs:
   build-release-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # full pipeline (image + ISO) can take up to 5–6 hours
+    timeout-minutes: 360
     strategy:
       matrix:
         profile: ${{ fromJson(github.event.inputs.profile != '' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
@@ -81,44 +78,25 @@ jobs:
       - name: Setup MOK keys
         run: |
           mkdir -p shani-install-media/keys/mok
-          # Use printf to avoid echo interpreting escape sequences in key material
           printf '%s\n' "${{ secrets.MOK_KEY }}"  > shani-install-media/keys/mok/MOK.key
           printf '%s\n' "${{ secrets.MOK_CRT }}"  > shani-install-media/keys/mok/MOK.crt
           printf '%s\n' "${{ secrets.MOK_DER_B64 }}" | base64 --decode \
             > shani-install-media/keys/mok/MOK.der
 
-      - name: Setup GPG public key
-        run: |
-          mkdir -p shani-install-media/keys/gpg
-          # Use an isolated GNUPGHOME so the import doesn't touch the runner's
-          # system keyring and is automatically discarded after the job exits.
-          TMPGNUPG="$(mktemp -d)"
-          chmod 700 "$TMPGNUPG"
-          printf '%s\n' "$GPG_PRIVATE_KEY" \
-            | gpg --homedir "$TMPGNUPG" --batch --import
-          gpg --homedir "$TMPGNUPG" \
-              --batch \
-              --armor \
-              --export "$GPG_KEY_ID" \
-              > shani-install-media/keys/gpg/gpg-public.asc
-          rm -rf "$TMPGNUPG"
+      # run_in_container.sh handles: docker pull, SSH setup, GPG import,
+      # and rclone config — all inside the shani-builder container.
+      # build.sh dispatches to the correct sub-scripts based on the command.
 
-      # ── all mode (default / scheduled) ────────────────────────────────────
-      # Runs: image → release latest → upload image
       - name: Build and upload — ${{ matrix.profile }}
         if: ${{ github.event_name == 'schedule' || github.event.inputs.build_mode != 'full' }}
         working-directory: shani-install-media
-        # Use absolute path so sudo does not lose the working directory context.
-        run: sudo --preserve-env bash "$GITHUB_WORKSPACE/shani-install-media/run_in_container.sh" ./build.sh all -p "${{ matrix.profile }}"
+        run: sudo --preserve-env bash run_in_container.sh build.sh all -p "${{ matrix.profile }}"
 
-      # ── full mode (manual dispatch only) ──────────────────────────────────
-      # Runs: image → iso → repack → release latest → upload all
       - name: Full pipeline — ${{ matrix.profile }}
         if: ${{ github.event_name != 'schedule' && github.event.inputs.build_mode == 'full' }}
         working-directory: shani-install-media
-        run: sudo --preserve-env bash "$GITHUB_WORKSPACE/shani-install-media/run_in_container.sh" ./build.sh full -p "${{ matrix.profile }}"
+        run: sudo --preserve-env bash run_in_container.sh build.sh full -p "${{ matrix.profile }}"
 
-      # ── verify ────────────────────────────────────────────────────────────
       - name: Verify uploaded artifact — ${{ matrix.profile }}
         working-directory: shani-install-media
-        run: sudo --preserve-env bash "$GITHUB_WORKSPACE/shani-install-media/run_in_container.sh" ./build.sh verify -p "${{ matrix.profile }}"
+        run: sudo --preserve-env bash run_in_container.sh build.sh verify -p "${{ matrix.profile }}"

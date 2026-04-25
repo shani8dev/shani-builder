@@ -13,7 +13,6 @@ on:
           - plasma
           - cosmic
 
-# One promotion at a time — prevents two dispatches racing to write stable.txt
 concurrency:
   group: promote-stable
   cancel-in-progress: false
@@ -46,48 +45,12 @@ jobs:
           path: shani-install-media
           fetch-depth: 0
 
-      - name: Pull builder image
-        run: docker pull shrinivasvkumbhar/shani-builder:latest || true
+      - name: Make scripts executable
+        run: chmod +x shani-install-media/run_in_container.sh shani-install-media/build.sh
 
+      # run_in_container.sh handles docker pull, SSH setup, and rclone config
+      # inside the shani-builder container — no need to install rclone on the
+      # runner or manage SSH keys for both user and root separately.
       - name: Promote latest to stable — ${{ matrix.profile }}
-        # Run entirely inside shani-builder, which already has rclone, openssh,
-        # and rsync installed. SSH and rclone are configured inside the container
-        # as root, so there is no sudo path confusion and no need to install tools.
-        # Secrets are forwarded via -e — never interpolated into the command string.
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE/shani-install-media:/work" \
-            -e SSH_PRIVATE_KEY \
-            -e R2_ACCESS_KEY_ID \
-            -e R2_SECRET_ACCESS_KEY \
-            -e R2_ACCOUNT_ID \
-            -e R2_BUCKET \
-            shrinivasvkumbhar/shani-builder:latest \
-            bash -euo pipefail -c '
-              # ── SSH ──────────────────────────────────────────────────────
-              mkdir -p /root/.ssh
-              printf "%s\n" "$SSH_PRIVATE_KEY" > /root/.ssh/id_rsa
-              chmod 600 /root/.ssh/id_rsa
-              ssh-keyscan -H sourceforge.net >> /root/.ssh/known_hosts 2>/dev/null || true
-              chmod 644 /root/.ssh/known_hosts
-              printf "Host *\n    StrictHostKeyChecking no\n    BatchMode yes\n" \
-                > /root/.ssh/config
-              chmod 600 /root/.ssh/config
-
-              # ── rclone ───────────────────────────────────────────────────
-              mkdir -p /root/.config/rclone
-              cat > /root/.config/rclone/rclone.conf << RCLONECFG
-[r2]
-type = s3
-provider = Cloudflare
-access_key_id = ${R2_ACCESS_KEY_ID}
-secret_access_key = ${R2_SECRET_ACCESS_KEY}
-endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
-acl = private
-no_check_bucket = true
-RCLONECFG
-
-              # ── promote ──────────────────────────────────────────────────
-              chmod +x /work/scripts/promote-stable.sh
-              exec /work/scripts/promote-stable.sh -p "'"${{ matrix.profile }}"'"
-            '
+        working-directory: shani-install-media
+        run: sudo --preserve-env bash run_in_container.sh build.sh promote-stable -p "${{ matrix.profile }}"

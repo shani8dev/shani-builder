@@ -300,9 +300,13 @@ rebuild_database() {
         "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
             cd /repo
+            # Remove old db files and any existing symlinks before rebuilding.
             rm -f shani.db shani.db.tar.gz shani.db.tar.gz.old \
                   shani.files shani.files.tar.gz shani.files.tar.gz.old
             repo-add shani.db.tar.gz *.pkg.tar.zst
+            # repo-add creates shani.db/shani.files as symlinks — remove them
+            # so the following cp creates real files instead.
+            rm -f shani.db shani.files
             cp shani.db.tar.gz shani.db
             cp shani.files.tar.gz shani.files
         '

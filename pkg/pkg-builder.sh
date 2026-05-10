@@ -17,9 +17,12 @@ readonly PKGBUILD_REPO_URL="git@github.com:shani8dev/shani-pkgbuilds.git"
 readonly PUBLIC_REPO_URL="git@github.com:shani8dev/shani-repo.git"
 readonly BUILDER_IMAGE="shrinivasvkumbhar/shani-builder:latest"
 
-# Temporary paths — all under /tmp so they never land inside the repo dirs
-readonly SSH_DIR="$(mktemp -d /tmp/shani-ssh-XXXXXX)"
-readonly GPG_KEY_FILE="$(mktemp /tmp/shani-gpg-XXXXXX.asc)"
+# Temporary paths — all under /tmp so they never land inside the repo dirs.
+# Declare and assign separately so a mktemp failure is not masked by readonly.
+SSH_DIR="$(mktemp -d /tmp/shani-ssh-XXXXXX)"
+readonly SSH_DIR
+GPG_KEY_FILE="$(mktemp /tmp/shani-gpg-XXXXXX.asc)"
+readonly GPG_KEY_FILE
 
 # ---------------------------------------------------------------------------
 # Cleanup — always runs on exit, even on error
@@ -47,7 +50,7 @@ for var in SSH_PRIVATE_KEY GPG_PASSPHRASE GPG_PRIVATE_KEY; do
 done
 
 # ---------------------------------------------------------------------------
-# Architecture → repo subdirectory
+# Architecture -> repo subdirectory
 # ---------------------------------------------------------------------------
 # Do NOT declare ARCH as readonly — sudo may inherit it as readonly from the
 # runner environment, causing "readonly variable" on assignment.
@@ -153,7 +156,6 @@ cleanup_old_versions() {
         [[ -e "$file" ]] || continue
         local base="${file%.sig}"
         base="${base%.pkg.tar.zst}"
-        # basename without directory prefix
         local fname
         fname="$(basename "$base")"
         if [[ -z "${current_packages[$fname]+x}" ]]; then
@@ -166,15 +168,19 @@ cleanup_old_versions() {
 # ---------------------------------------------------------------------------
 # Build a single package inside the shani-builder container.
 # Returns non-zero on failure so the caller can collect FAILED_PACKAGES.
+#
+# The inner builduser script is written to a temp file by root before su drops
+# privileges. This avoids nested \' quoting inside bash -c '...' which both
+# confuses shellcheck and is fragile to maintain.
 # ---------------------------------------------------------------------------
 build_package() {
     local pkgbuild_dir="$1"
+    local pkgbuild_dir_clean="${pkgbuild_dir%/}"
 
     # Source PKGBUILD in a subshell to read metadata without polluting this shell
     local pkgname pkgver pkgrel pkg_arch
     eval "$(bash -c '
         source "'"${pkgbuild_dir}"'/PKGBUILD"
-        # Use first element of each array for the primary artifact name
         echo "pkgname=${pkgname[0]}"
         echo "pkgver=${pkgver}"
         echo "pkgrel=${pkgrel}"
@@ -192,56 +198,77 @@ build_package() {
 
     log "Building: ${pkgname} ${pkgver}-${pkgrel}"
 
-    # Write GPG key to temp file with correct permissions for the container's builduser (uid 1000)
+    # Write GPG key to temp file; mount it read-only into the container so
+    # the key never touches the repo working directories.
     printf '%s\n' "$GPG_PRIVATE_KEY" > "${GPG_KEY_FILE}"
-    chmod 644 "${GPG_KEY_FILE}"  # readable by builduser inside the container
+    chmod 644 "${GPG_KEY_FILE}"  # readable by builduser (uid 1000) inside the container
+
+    # The script that runs as builduser inside the container.
+    # Written to /tmp/build-inner.sh by root, then executed by su.
+    # Using a file avoids nested single-quote escaping inside bash -c which
+    # is fragile to maintain and causes false-positive shellcheck errors.
+    local inner_script
+    inner_script="$(cat <<'INNER'
+#!/bin/bash
+set -euo pipefail
+export GNUPGHOME=/home/builduser/.gnupg
+
+# Import the GPG signing key
+gpg --batch --pinentry-mode loopback \
+    --passphrase "${GPG_PASSPHRASE}" \
+    --import /tmp/gpg-private.asc \
+    || { echo "GPG import failed"; exit 1; }
+
+cd "/pkg/${PKGBUILD_DIR}" || exit 1
+
+# Build the package (downloads sources, compiles, packages)
+makepkg -sc --noconfirm \
+    || { echo "makepkg failed for ${PKGBUILD_DIR}"; exit 1; }
+
+# Detached armored signature
+gpg --batch --pinentry-mode loopback \
+    --passphrase "${GPG_PASSPHRASE}" \
+    --detach-sign --armor \
+    --output "${PKG_FILE}.sig" \
+    "${PKG_FILE}" \
+    || { echo "GPG sign failed for ${PKG_FILE}"; exit 1; }
+INNER
+)"
 
     docker run --rm \
         -v "$(pwd):/pkg" \
         -v "${GPG_KEY_FILE}:/tmp/gpg-private.asc:ro" \
-        -e PKGBUILD_DIR="${pkgbuild_dir%/}" \
+        -e PKGBUILD_DIR="${pkgbuild_dir_clean}" \
         -e GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
         -e PKG_FILE="${pkg_file}" \
+        -e BUILD_INNER_SCRIPT="${inner_script}" \
         "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
 
             # Fix ownership of the build directory — do NOT touch all of /pkg
             chown -R builduser:builduser "/pkg/${PKGBUILD_DIR}"
 
-            # Use env to pass secrets into su; su - (login shell) clears the
-            # environment, so variables must be forwarded explicitly.
+            # Ensure builduser home and GPG dir exist with correct permissions.
+            # GPG refuses to run if ~/.gnupg is missing or not chmod 700.
+            mkdir -p /home/builduser/.gnupg
+            chown -R builduser:builduser /home/builduser
+            chmod 700 /home/builduser/.gnupg
+
+            # Write the inner script to a temp file that builduser can execute.
+            # This avoids \047 (escaped single-quote) nesting inside bash -c.
+            printf "%s\n" "${BUILD_INNER_SCRIPT}" > /tmp/build-inner.sh
+            chmod 755 /tmp/build-inner.sh
+
+            # su - starts a login shell which resets the environment.
+            # Re-inject secrets explicitly via env before su runs.
             env GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
                 PKGBUILD_DIR="${PKGBUILD_DIR}" \
                 PKG_FILE="${PKG_FILE}" \
-            su - builduser -s /bin/bash -c \'
-                set -euo pipefail
-                export GNUPGHOME=/home/builduser/.gnupg
-
-                # Import the signing key
-                gpg --batch --pinentry-mode loopback \
-                    --passphrase "${GPG_PASSPHRASE}" \
-                    --import /tmp/gpg-private.asc \
-                    || { echo "GPG import failed"; exit 1; }
-
-                cd "/pkg/${PKGBUILD_DIR}" || exit 1
-
-                # Build the package (downloads sources, compiles, packages)
-                makepkg -sc --noconfirm \
-                    || { echo "makepkg failed for ${PKGBUILD_DIR}"; exit 1; }
-
-                # Detached armored signature
-                gpg --batch --pinentry-mode loopback \
-                    --passphrase "${GPG_PASSPHRASE}" \
-                    --detach-sign --armor \
-                    --output "${PKG_FILE}.sig" \
-                    "${PKG_FILE}" \
-                    || { echo "GPG sign failed for ${PKG_FILE}"; exit 1; }
-            \'
+            su - builduser -s /bin/bash /tmp/build-inner.sh
         '
 
-    # Move artifacts to the arch directory
+    # Move artifacts from the pkgbuild dir to the arch repo dir
     local built=false
-    local pkgbuild_dir_clean="${pkgbuild_dir%/}"
     for artifact in "${pkg_file}" "${pkg_sig}"; do
         if [[ -f "${pkgbuild_dir_clean}/${artifact}" ]]; then
             mv "${pkgbuild_dir_clean}/${artifact}" "${ARCH_DIR}/"
@@ -273,7 +300,6 @@ rebuild_database() {
 
     log "Rebuilding package database in ${arch_dir}..."
 
-    # Verify there is something to add
     local pkg_count
     pkg_count=$(find "${arch_dir}" -maxdepth 1 -name '*.pkg.tar.zst' | wc -l)
     if [[ "$pkg_count" -eq 0 ]]; then
@@ -287,14 +313,14 @@ rebuild_database() {
             set -euo pipefail
             cd /repo
 
-            # Remove stale db symlinks/tarballs before regenerating
+            # Remove stale db files before regenerating
             rm -f shani.db shani.db.tar.gz shani.db.tar.gz.old \
                   shani.files shani.files.tar.gz shani.files.tar.gz.old
 
             # Build fresh database from all packages in the directory
             repo-add shani.db.tar.gz *.pkg.tar.zst
 
-            # Create the expected un-suffixed symlink names
+            # Create the expected symlink names without the .tar.gz suffix
             cp shani.db.tar.gz shani.db
             cp shani.files.tar.gz shani.files
         '
@@ -311,7 +337,7 @@ commit_and_push() {
 
     log "Committing changes to ${repo_dir}..."
 
-    # Use --local to avoid polluting the runner's global git config
+    # Use --local to avoid polluting the runner global git config
     git -C "${repo_dir}" config --local user.name  "Shrinivas Kumbhar"
     git -C "${repo_dir}" config --local user.email "shrinivas.v.kumbhar@gmail.com"
 

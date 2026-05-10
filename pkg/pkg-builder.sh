@@ -208,30 +208,35 @@ build_package() {
             # Fix ownership of the build directory — do NOT touch all of /pkg
             chown -R builduser:builduser "/pkg/${PKGBUILD_DIR}"
 
-            su - builduser -c "
+            # Use env to pass secrets into su; su - (login shell) clears the
+            # environment, so variables must be forwarded explicitly.
+            env GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
+                PKGBUILD_DIR="${PKGBUILD_DIR}" \
+                PKG_FILE="${PKG_FILE}" \
+            su - builduser -s /bin/bash -c \'
                 set -euo pipefail
                 export GNUPGHOME=/home/builduser/.gnupg
 
                 # Import the signing key
                 gpg --batch --pinentry-mode loopback \
-                    --passphrase \"\${GPG_PASSPHRASE}\" \
+                    --passphrase "${GPG_PASSPHRASE}" \
                     --import /tmp/gpg-private.asc \
-                    || { echo \"GPG import failed\"; exit 1; }
+                    || { echo "GPG import failed"; exit 1; }
 
-                cd \"/pkg/\${PKGBUILD_DIR}\" || exit 1
+                cd "/pkg/${PKGBUILD_DIR}" || exit 1
 
                 # Build the package (downloads sources, compiles, packages)
                 makepkg -sc --noconfirm \
-                    || { echo \"makepkg failed for \${PKGBUILD_DIR}\"; exit 1; }
+                    || { echo "makepkg failed for ${PKGBUILD_DIR}"; exit 1; }
 
                 # Detached armored signature
                 gpg --batch --pinentry-mode loopback \
-                    --passphrase \"\${GPG_PASSPHRASE}\" \
+                    --passphrase "${GPG_PASSPHRASE}" \
                     --detach-sign --armor \
-                    --output \"\${PKG_FILE}.sig\" \
-                    \"\${PKG_FILE}\" \
-                    || { echo \"GPG sign failed for \${PKG_FILE}\"; exit 1; }
-            "
+                    --output "${PKG_FILE}.sig" \
+                    "${PKG_FILE}" \
+                    || { echo "GPG sign failed for ${PKG_FILE}"; exit 1; }
+            \'
         '
 
     # Move artifacts to the arch directory

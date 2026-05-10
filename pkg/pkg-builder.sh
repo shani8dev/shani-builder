@@ -170,23 +170,21 @@ cleanup_old_versions() {
 # ---------------------------------------------------------------------------
 # Build a single package inside the shani-builder container.
 #
-# Key decisions that match the working old script:
-#   - GPG passphrase always piped via --passphrase-fd 0 (safe with special chars)
-#   - GPG sign produces a BINARY detached sig — NO --armor
-#     (pacman and repo-add both reject ASCII-armored .sig files)
-#   - pacman -Sy --noconfirm git run first (prevents stale-db build failures)
-#   - chown -R builduser on /pkg and /home/builduser before su -
-#   - builduser runs everything via su - builduser -s /bin/bash
+# The docker bash -c string is double-quoted so that $GPG_PASSPHRASE,
+# $PKGBUILD_DIR, $PKG_FILE, and $GPG_PRIVATE_KEY expand HERE in the outer
+# shell before docker runs — they are baked into the command string.
+# This is exactly how the old working script injected secrets and is why
+# su - (which strips the environment) is not a problem.
 #
-# The inner script is written to a /tmp temp file and bind-mounted :ro so we
-# avoid docker -e multiline mangling and nested single-quote escaping in bash -c.
+# GPG sign uses a binary detached sig — NO --armor.
+# pacman and repo-add both reject ASCII-armored .sig files.
 # ---------------------------------------------------------------------------
 build_package() {
     local pkgbuild_dir="$1"
     local pkgbuild_dir_clean="${pkgbuild_dir%/}"
 
     # Read PKGBUILD metadata in a subshell — does not pollute this shell's env.
-    # Fall back to scalar syntax (${var}) for PKGBUILDs that don't use arrays.
+    # Falls back to scalar syntax for PKGBUILDs that don't use arrays.
     local pkgname pkgver pkgrel pkg_arch
     eval "$(bash -c '
         source "'"${pkgbuild_dir}"'/PKGBUILD"
@@ -207,58 +205,24 @@ build_package() {
 
     log "Building: ${pkgname} ${pkgver}-${pkgrel}"
 
-    # Write GPG private key to /tmp temp file — bind-mounted :ro into container.
+    # Write GPG private key to temp file — bind-mounted into the container.
     printf '%s\n' "$GPG_PRIVATE_KEY" > "${GPG_KEY_FILE}"
     chmod 644 "${GPG_KEY_FILE}"
 
-    # Write the builduser inner script to a /tmp temp file — bind-mounted :ro.
-    # Quoted heredoc (<<'INNER') so $-references expand at runtime inside the
-    # container's shell, not here in the outer shell.
-    local inner_script_file
-    inner_script_file="$(mktemp /tmp/shani-inner-XXXXXX.sh)"
-    cat > "${inner_script_file}" <<'INNER'
-#!/bin/bash
-set -euo pipefail
-export GNUPGHOME=/home/builduser/.gnupg
-
-# Import GPG private key.
-# Passphrase piped via --passphrase-fd 0 — handles special characters safely.
-echo "${GPG_PASSPHRASE}" | gpg --batch --pinentry-mode loopback \
-    --passphrase-fd 0 \
-    --import /tmp/gpg-private.asc \
-    || { echo "GPG import failed"; exit 1; }
-
-cd "/pkg/${PKGBUILD_DIR}" || { echo "Failed to cd into /pkg/${PKGBUILD_DIR}"; exit 1; }
-
-# Build the package.
-makepkg -sc --noconfirm \
-    || { echo "makepkg failed for ${PKGBUILD_DIR}"; exit 1; }
-
-# Sign the package — BINARY detached signature (no --armor).
-# pacman and repo-add require a binary .sig; ASCII-armored sigs are rejected.
-echo "${GPG_PASSPHRASE}" | gpg --batch --pinentry-mode loopback \
-    --passphrase-fd 0 \
-    --detach-sign \
-    --output "${PKG_FILE}.sig" \
-    "${PKG_FILE}" \
-    || { echo "GPG sign failed for ${PKG_FILE}"; exit 1; }
-INNER
-    chmod 755 "${inner_script_file}"
-
-    # Run the builder container.
+    # The outer shell expands $GPG_PASSPHRASE, $pkgbuild_dir_clean, and
+    # $pkg_file into the string before docker runs, so su - never needs to
+    # propagate them. Inner escaped quotes \" delimit su - builduser -c "...".
     docker run --rm \
         -v "$(pwd):/pkg" \
-        -v "${GPG_KEY_FILE}:/tmp/gpg-private.asc:ro" \
-        -v "${inner_script_file}:/tmp/build-inner.sh:ro" \
+        -v "${GPG_KEY_FILE}:/home/builduser/.gnupg/temp-private.asc" \
         -e PKGBUILD_DIR="${pkgbuild_dir_clean}" \
         -e GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
         -e PKG_FILE="${pkg_file}" \
-        "${BUILDER_IMAGE}" bash -c '
+        "${BUILDER_IMAGE}" bash -c "
             set -euo pipefail
 
             # Refresh pacman db and ensure git is available for makepkg --syncdeps.
-            # Matches the working old script — prevents stale-db build failures.
-            pacman -Sy --noconfirm git || { echo "pacman -Sy failed"; exit 1; }
+            pacman -Sy --noconfirm git || { echo 'pacman -Sy failed'; exit 1; }
 
             # builduser must own /pkg to write build artifacts.
             chown -R builduser:builduser /pkg
@@ -268,14 +232,29 @@ INNER
             chown -R builduser:builduser /home/builduser
             chmod 700 /home/builduser/.gnupg
 
-            # su - resets the environment; re-inject secrets explicitly via env.
-            env GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
-                PKGBUILD_DIR="${PKGBUILD_DIR}" \
-                PKG_FILE="${PKG_FILE}" \
-            su - builduser -s /bin/bash /tmp/build-inner.sh
-        '
+            su - builduser -c \"
+                export GNUPGHOME=/home/builduser/.gnupg
 
-    rm -f "${inner_script_file}"
+                # Import GPG key — passphrase piped via stdin.
+                echo '${GPG_PASSPHRASE}' | gpg --batch --pinentry-mode loopback \\
+                    --passphrase-fd 0 \\
+                    --import /home/builduser/.gnupg/temp-private.asc \\
+                    || { echo 'GPG import failed'; exit 1; }
+
+                cd /pkg/${pkgbuild_dir_clean} || { echo 'cd failed'; exit 1; }
+
+                makepkg -sc --noconfirm \\
+                    || { echo 'makepkg failed for ${pkgbuild_dir_clean}'; exit 1; }
+
+                # Sign — binary detached sig, NO --armor (pacman rejects ASCII sigs).
+                echo '${GPG_PASSPHRASE}' | gpg --batch --pinentry-mode loopback \\
+                    --passphrase-fd 0 \\
+                    --detach-sign \\
+                    --output '${pkg_file}.sig' \\
+                    '${pkg_file}' \\
+                    || { echo 'GPG sign failed for ${pkg_file}'; exit 1; }
+            \"
+        "
 
     # Move built artifacts into the public repo directory.
     local built=false
@@ -344,7 +323,7 @@ commit_and_push() {
     git -C "${repo_dir}" config --local user.email "shrinivas.v.kumbhar@gmail.com"
     git -C "${repo_dir}" add .
 
-    # Check staged changes (--cached), not working-tree diffs.
+    # --cached checks what is actually staged, not working-tree diffs.
     if git -C "${repo_dir}" diff --cached --quiet; then
         log "No changes to commit."
         return 0

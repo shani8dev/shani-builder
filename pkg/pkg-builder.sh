@@ -199,7 +199,7 @@ build_package() {
     docker run --rm \
         -v "$(pwd):/pkg" \
         -v "${GPG_KEY_FILE}:/tmp/gpg-private.asc:ro" \
-        -e PKGBUILD_DIR="$(basename "${pkgbuild_dir}")" \
+        -e PKGBUILD_DIR="${pkgbuild_dir}" \
         -e GPG_PASSPHRASE \
         -e PKG_FILE="${pkg_file}" \
         "${BUILDER_IMAGE}" bash -c '

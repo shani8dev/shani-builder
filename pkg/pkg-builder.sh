@@ -220,7 +220,7 @@ gpg --batch --pinentry-mode loopback \
     "${PKG_FILE}" \
     || { echo "GPG sign failed for ${PKG_FILE}"; exit 1; }
 INNER
-    chmod 755 "${inner_script_file}"
+    chmod 755 "${inner_script_file}"  # must be set on host before mounting
 
     docker run --rm \
         -v "$(pwd):/pkg" \
@@ -244,10 +244,8 @@ INNER
             chown -R builduser:builduser /home/builduser
             chmod 700 /home/builduser/.gnupg
 
-            # Make the mounted script executable (mount may strip the bit)
-            chmod 755 /tmp/build-inner.sh
-
             # su - resets the environment; re-inject secrets explicitly via env
+            # Note: /tmp/build-inner.sh is :ro mounted; chmod 755 set on host before mount
             env GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
                 PKGBUILD_DIR="${PKGBUILD_DIR}" \
                 PKG_FILE="${PKG_FILE}" \

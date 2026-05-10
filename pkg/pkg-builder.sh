@@ -18,7 +18,7 @@ readonly PUBLIC_REPO_URL="git@github.com:shani8dev/shani-repo.git"
 readonly BUILDER_IMAGE="shrinivasvkumbhar/shani-builder:latest"
 
 # Temporary paths — all under /tmp so they never land inside the repo dirs.
-# Declare and assign separately so a mktemp failure is not masked by readonly.
+# Declare and assign separately so mktemp failures are not masked by readonly.
 SSH_DIR="$(mktemp -d /tmp/shani-ssh-XXXXXX)"
 readonly SSH_DIR
 GPG_KEY_FILE="$(mktemp /tmp/shani-gpg-XXXXXX.asc)"
@@ -28,7 +28,6 @@ readonly GPG_KEY_FILE
 # Cleanup — always runs on exit, even on error
 # ---------------------------------------------------------------------------
 cleanup() {
-    # Shred the GPG key before removing it so key material is not recoverable
     command -v shred &>/dev/null && shred -u "${GPG_KEY_FILE}" 2>/dev/null || rm -f "${GPG_KEY_FILE}"
     rm -rf "${SSH_DIR}"
 }
@@ -63,7 +62,7 @@ esac
 unset _ARCH
 
 # ---------------------------------------------------------------------------
-# Docker — already present on GitHub runners; this is a safety net for local use
+# Docker — already present on GitHub runners; safety net for local use
 # ---------------------------------------------------------------------------
 install_docker() {
     command -v docker &>/dev/null && { log "Docker is already installed."; return 0; }
@@ -74,8 +73,8 @@ install_docker() {
     # shellcheck disable=SC1091
     source /etc/os-release
     case "$ID" in
-        ubuntu|debian) apt-get update -qq && apt-get install -y docker.io ;;
-        arch)          pacman -S --noconfirm docker ;;
+        ubuntu|debian)      apt-get update -qq && apt-get install -y docker.io ;;
+        arch)               pacman -S --noconfirm docker ;;
         fedora|centos|rhel) dnf install -y docker ;;
         *) log "Error: Unsupported OS for Docker installation." >&2; exit 1 ;;
     esac
@@ -88,8 +87,6 @@ install_docker() {
 setup_ssh() {
     log "Setting up SSH..."
     local key_file="${SSH_DIR}/id_rsa"
-    # printf '%s\n' is safer than echo — does not misinterpret backslashes or
-    # -n/-e flags that might appear in certain key formats.
     printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "${key_file}"
     chmod 600 "${key_file}"
     cat > "${SSH_DIR}/config" <<EOF
@@ -121,9 +118,7 @@ clone_or_update_repo() {
 }
 
 # ---------------------------------------------------------------------------
-# Remove package files whose name-version-release no longer matches any
-# current PKGBUILD. Runs in a subshell per PKGBUILD so sourcing one never
-# pollutes the next iteration's variables.
+# Remove stale package files whose version no longer matches any PKGBUILD.
 # ---------------------------------------------------------------------------
 cleanup_old_versions() {
     local arch_dir="$1"
@@ -131,15 +126,12 @@ cleanup_old_versions() {
 
     log "Scanning for stale package versions in ${arch_dir}..."
 
-    # Build a set of current package base-names (name-ver-rel-arch) from PKGBUILDs
     local -A current_packages=()
     for pkgbuild_dir in shani-pkgbuilds/*/; do
         [[ -f "${pkgbuild_dir}/PKGBUILD" ]] || continue
-        # Source in a subshell to avoid variable bleed between iterations
         local entry
         entry=$(bash -c '
             source "'"${pkgbuild_dir}"'/PKGBUILD"
-            # pkgname and arch may be arrays; iterate all combinations
             for pn in "${pkgname[@]}"; do
                 for pa in "${arch[@]}"; do
                     echo "${pn}-${pkgver}-${pkgrel}-${pa}"
@@ -151,7 +143,6 @@ cleanup_old_versions() {
         done <<< "$entry"
     done
 
-    # Remove any .pkg.tar.zst (and matching .sig) not in the current set
     for file in "${arch_dir}"/*.pkg.tar.zst "${arch_dir}"/*.pkg.tar.zst.sig; do
         [[ -e "$file" ]] || continue
         local base="${file%.sig}"
@@ -167,17 +158,17 @@ cleanup_old_versions() {
 
 # ---------------------------------------------------------------------------
 # Build a single package inside the shani-builder container.
-# Returns non-zero on failure so the caller can collect FAILED_PACKAGES.
 #
-# The inner builduser script is written to a temp file by root before su drops
-# privileges. This avoids nested \' quoting inside bash -c '...' which both
-# confuses shellcheck and is fragile to maintain.
+# The builduser script is written to a host-side temp file and bind-mounted
+# into the container — the same pattern used for the GPG key. This avoids
+# passing a multiline script via docker -e (which mangles newlines) and avoids
+# nested single-quote escaping inside bash -c (which breaks shellcheck).
 # ---------------------------------------------------------------------------
 build_package() {
     local pkgbuild_dir="$1"
     local pkgbuild_dir_clean="${pkgbuild_dir%/}"
 
-    # Source PKGBUILD in a subshell to read metadata without polluting this shell
+    # Read PKGBUILD metadata in a subshell to avoid polluting this shell
     local pkgname pkgver pkgrel pkg_arch
     eval "$(bash -c '
         source "'"${pkgbuild_dir}"'/PKGBUILD"
@@ -190,7 +181,6 @@ build_package() {
     local pkg_file="${pkgname}-${pkgver}-${pkgrel}-${pkg_arch}.pkg.tar.zst"
     local pkg_sig="${pkg_file}.sig"
 
-    # Skip if both artifact and signature already exist
     if [[ -f "${ARCH_DIR}/${pkg_file}" && -f "${ARCH_DIR}/${pkg_sig}" ]]; then
         log "Package ${pkg_file} already exists — skipping build."
         return 0
@@ -198,22 +188,21 @@ build_package() {
 
     log "Building: ${pkgname} ${pkgver}-${pkgrel}"
 
-    # Write GPG key to temp file; mount it read-only into the container so
-    # the key never touches the repo working directories.
+    # GPG private key — bind-mounted read-only into the container
     printf '%s\n' "$GPG_PRIVATE_KEY" > "${GPG_KEY_FILE}"
-    chmod 644 "${GPG_KEY_FILE}"  # readable by builduser (uid 1000) inside the container
+    chmod 644 "${GPG_KEY_FILE}"
 
-    # The script that runs as builduser inside the container.
-    # Written to /tmp/build-inner.sh by root, then executed by su.
-    # Using a file avoids nested single-quote escaping inside bash -c which
-    # is fragile to maintain and causes false-positive shellcheck errors.
-    local inner_script
-    inner_script="$(cat <<'INNER'
+    # Builduser script — written to a host temp file, bind-mounted read-only.
+    # Avoids docker -e multiline mangling and nested quote escaping.
+    local inner_script_file
+    inner_script_file="$(mktemp /tmp/shani-inner-XXXXXX.sh)"
+    # Write with a quoted heredoc so the file contains literal $-references
+    # that will be expanded by builduser's shell at runtime, not now.
+    cat > "${inner_script_file}" <<'INNER'
 #!/bin/bash
 set -euo pipefail
 export GNUPGHOME=/home/builduser/.gnupg
 
-# Import the GPG signing key
 gpg --batch --pinentry-mode loopback \
     --passphrase "${GPG_PASSPHRASE}" \
     --import /tmp/gpg-private.asc \
@@ -221,11 +210,9 @@ gpg --batch --pinentry-mode loopback \
 
 cd "/pkg/${PKGBUILD_DIR}" || exit 1
 
-# Build the package (downloads sources, compiles, packages)
 makepkg -sc --noconfirm \
     || { echo "makepkg failed for ${PKGBUILD_DIR}"; exit 1; }
 
-# Detached armored signature
 gpg --batch --pinentry-mode loopback \
     --passphrase "${GPG_PASSPHRASE}" \
     --detach-sign --armor \
@@ -233,41 +220,42 @@ gpg --batch --pinentry-mode loopback \
     "${PKG_FILE}" \
     || { echo "GPG sign failed for ${PKG_FILE}"; exit 1; }
 INNER
-)"
+    chmod 755 "${inner_script_file}"
 
     docker run --rm \
         -v "$(pwd):/pkg" \
         -v "${GPG_KEY_FILE}:/tmp/gpg-private.asc:ro" \
+        -v "${inner_script_file}:/tmp/build-inner.sh:ro" \
         -e PKGBUILD_DIR="${pkgbuild_dir_clean}" \
         -e GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
         -e PKG_FILE="${pkg_file}" \
-        -e BUILD_INNER_SCRIPT="${inner_script}" \
         "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
 
-            # Fix ownership of the build directory — do NOT touch all of /pkg
-            chown -R builduser:builduser "/pkg/${PKGBUILD_DIR}"
+            # Refresh pacman db and ensure git is available for makepkg --syncdeps.
+            # This matches the working version and prevents stale-db build failures.
+            pacman -Sy --noconfirm git || { echo "pacman -Sy failed"; exit 1; }
 
-            # Ensure builduser home and GPG dir exist with correct permissions.
-            # GPG refuses to run if ~/.gnupg is missing or not chmod 700.
+            # chown all of /pkg so builduser can write build artifacts anywhere
+            chown -R builduser:builduser /pkg
+
+            # GPG refuses to run if ~/.gnupg is missing or not chmod 700
             mkdir -p /home/builduser/.gnupg
             chown -R builduser:builduser /home/builduser
             chmod 700 /home/builduser/.gnupg
 
-            # Write the inner script to a temp file that builduser can execute.
-            # This avoids \047 (escaped single-quote) nesting inside bash -c.
-            printf "%s\n" "${BUILD_INNER_SCRIPT}" > /tmp/build-inner.sh
+            # Make the mounted script executable (mount may strip the bit)
             chmod 755 /tmp/build-inner.sh
 
-            # su - starts a login shell which resets the environment.
-            # Re-inject secrets explicitly via env before su runs.
+            # su - resets the environment; re-inject secrets explicitly via env
             env GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
                 PKGBUILD_DIR="${PKGBUILD_DIR}" \
                 PKG_FILE="${PKG_FILE}" \
             su - builduser -s /bin/bash /tmp/build-inner.sh
         '
 
-    # Move artifacts from the pkgbuild dir to the arch repo dir
+    rm -f "${inner_script_file}"
+
     local built=false
     for artifact in "${pkg_file}" "${pkg_sig}"; do
         if [[ -f "${pkgbuild_dir_clean}/${artifact}" ]]; then
@@ -278,7 +266,6 @@ INNER
         fi
     done
 
-    # Clean up makepkg working directories
     rm -rf "${pkgbuild_dir_clean}/pkg" "${pkgbuild_dir_clean}/src"
 
     if [[ "$built" == false ]]; then
@@ -286,14 +273,12 @@ INNER
         return 1
     fi
 
-    # Record that this package needs a DB update
     PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pkg_file}")
     return 0
 }
 
 # ---------------------------------------------------------------------------
-# Rebuild the repo database from scratch using all current packages.
-# Called once after all packages have been built, not once per package.
+# Rebuild the repo database from all current packages.
 # ---------------------------------------------------------------------------
 rebuild_database() {
     local arch_dir="$1"
@@ -312,15 +297,9 @@ rebuild_database() {
         "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
             cd /repo
-
-            # Remove stale db files before regenerating
             rm -f shani.db shani.db.tar.gz shani.db.tar.gz.old \
                   shani.files shani.files.tar.gz shani.files.tar.gz.old
-
-            # Build fresh database from all packages in the directory
             repo-add shani.db.tar.gz *.pkg.tar.zst
-
-            # Create the expected symlink names without the .tar.gz suffix
             cp shani.db.tar.gz shani.db
             cp shani.files.tar.gz shani.files
         '
@@ -337,10 +316,8 @@ commit_and_push() {
 
     log "Committing changes to ${repo_dir}..."
 
-    # Use --local to avoid polluting the runner global git config
     git -C "${repo_dir}" config --local user.name  "Shrinivas Kumbhar"
     git -C "${repo_dir}" config --local user.email "shrinivas.v.kumbhar@gmail.com"
-
     git -C "${repo_dir}" add .
 
     if git -C "${repo_dir}" diff --cached --quiet; then
@@ -370,7 +347,6 @@ mkdir -p "${ARCH_DIR}"
 
 cleanup_old_versions "${ARCH_DIR}"
 
-# Track packages that were actually built so we rebuild the DB only when needed
 PACKAGES_NEEDING_DB_UPDATE=()
 FAILED_PACKAGES=()
 
@@ -387,7 +363,6 @@ for pkgbuild_dir in shani-pkgbuilds/*/; do
     fi
 done
 
-# Rebuild the database once if any package was newly built
 if [[ ${#PACKAGES_NEEDING_DB_UPDATE[@]} -gt 0 ]]; then
     log "${#PACKAGES_NEEDING_DB_UPDATE[@]} new package(s) built — rebuilding database..."
     rebuild_database "${ARCH_DIR}"
@@ -397,7 +372,6 @@ fi
 
 commit_and_push "shani-repo" "Update package repository with new builds"
 
-# Report failures and exit non-zero so CI shows a red run
 if [[ ${#FAILED_PACKAGES[@]} -gt 0 ]]; then
     log "ERROR: The following packages failed to build:"
     for pkg in "${FAILED_PACKAGES[@]}"; do

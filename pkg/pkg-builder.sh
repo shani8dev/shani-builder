@@ -2,9 +2,9 @@
 # pkg-builder.sh — Build, sign, and publish Shani OS custom packages to shani-repo.
 #
 # Credentials are read exclusively from environment variables:
-#   SSH_PRIVATE_KEY   — ED25519/RSA private key with write access to shani-pkgbuilds and shani-repo
-#   GPG_PASSPHRASE    — Passphrase for the GPG signing key
-#   GPG_PRIVATE_KEY   — Armored GPG private key for package signing
+#   SSH_PRIVATE_KEY  — ED25519/RSA private key with write access to both repos
+#   GPG_PASSPHRASE   — Passphrase for the GPG signing key
+#   GPG_PRIVATE_KEY  — Armored GPG private key for package signing
 #
 # Never pass secrets as positional arguments — they appear in ps aux output.
 
@@ -17,7 +17,12 @@ readonly PKGBUILD_REPO_URL="git@github.com:shani8dev/shani-pkgbuilds.git"
 readonly PUBLIC_REPO_URL="git@github.com:shani8dev/shani-repo.git"
 readonly BUILDER_IMAGE="shrinivasvkumbhar/shani-builder:latest"
 
-# Temporary paths — all under /tmp so they never land inside the repo dirs.
+# Credentials — read exclusively from environment variables.
+readonly SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY:-}"
+readonly GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
+readonly GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY:-}"
+
+# Temp files live in /tmp — never inside any repo directory.
 # Declare and assign separately so mktemp failures are not masked by readonly.
 SSH_DIR="$(mktemp -d /tmp/shani-ssh-XXXXXX)"
 readonly SSH_DIR
@@ -28,7 +33,9 @@ readonly GPG_KEY_FILE
 # Cleanup — always runs on exit, even on error
 # ---------------------------------------------------------------------------
 cleanup() {
-    command -v shred &>/dev/null && shred -u "${GPG_KEY_FILE}" 2>/dev/null || rm -f "${GPG_KEY_FILE}"
+    command -v shred &>/dev/null \
+        && shred -u "${GPG_KEY_FILE}" 2>/dev/null \
+        || rm -f "${GPG_KEY_FILE}"
     rm -rf "${SSH_DIR}"
 }
 trap cleanup EXIT
@@ -42,7 +49,7 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $*"; }
 # Validate required environment variables
 # ---------------------------------------------------------------------------
 for var in SSH_PRIVATE_KEY GPG_PASSPHRASE GPG_PRIVATE_KEY; do
-    if [[ -z "${!var:-}" ]]; then
+    if [[ -z "${!var}" ]]; then
         echo "Error: ${var} is not set." >&2
         exit 1
     fi
@@ -50,9 +57,9 @@ done
 
 # ---------------------------------------------------------------------------
 # Architecture -> repo subdirectory
-# ---------------------------------------------------------------------------
 # Do NOT declare ARCH as readonly — sudo may inherit it as readonly from the
-# runner environment, causing "readonly variable" on assignment.
+# runner environment, causing "readonly variable" errors on reassignment.
+# ---------------------------------------------------------------------------
 _ARCH="$(uname -m)"
 case "$_ARCH" in
     x86_64)         readonly ARCH_DIR="./shani-repo/x86_64" ;;
@@ -65,7 +72,10 @@ unset _ARCH
 # Docker — already present on GitHub runners; safety net for local use
 # ---------------------------------------------------------------------------
 install_docker() {
-    command -v docker &>/dev/null && { log "Docker is already installed."; return 0; }
+    if command -v docker &>/dev/null; then
+        log "Docker is already installed."
+        return 0
+    fi
     log "Docker not found, installing..."
     if [[ ! -f /etc/os-release ]]; then
         log "Error: Unknown OS, cannot install Docker." >&2; exit 1
@@ -78,7 +88,7 @@ install_docker() {
         fedora|centos|rhel) dnf install -y docker ;;
         *) log "Error: Unsupported OS for Docker installation." >&2; exit 1 ;;
     esac
-    log "Docker installed."
+    log "Docker installed successfully."
 }
 
 # ---------------------------------------------------------------------------
@@ -119,6 +129,7 @@ clone_or_update_repo() {
 
 # ---------------------------------------------------------------------------
 # Remove stale package files whose version no longer matches any PKGBUILD.
+# Sources each PKGBUILD in a subshell to avoid polluting this shell's env.
 # ---------------------------------------------------------------------------
 cleanup_old_versions() {
     local arch_dir="$1"
@@ -159,28 +170,36 @@ cleanup_old_versions() {
 # ---------------------------------------------------------------------------
 # Build a single package inside the shani-builder container.
 #
-# The builduser script is written to a host-side temp file and bind-mounted
-# into the container — the same pattern used for the GPG key. This avoids
-# passing a multiline script via docker -e (which mangles newlines) and avoids
-# nested single-quote escaping inside bash -c (which breaks shellcheck).
+# Key decisions that match the working old script:
+#   - GPG passphrase always piped via --passphrase-fd 0 (safe with special chars)
+#   - GPG sign produces a BINARY detached sig — NO --armor
+#     (pacman and repo-add both reject ASCII-armored .sig files)
+#   - pacman -Sy --noconfirm git run first (prevents stale-db build failures)
+#   - chown -R builduser on /pkg and /home/builduser before su -
+#   - builduser runs everything via su - builduser -s /bin/bash
+#
+# The inner script is written to a /tmp temp file and bind-mounted :ro so we
+# avoid docker -e multiline mangling and nested single-quote escaping in bash -c.
 # ---------------------------------------------------------------------------
 build_package() {
     local pkgbuild_dir="$1"
     local pkgbuild_dir_clean="${pkgbuild_dir%/}"
 
-    # Read PKGBUILD metadata in a subshell to avoid polluting this shell
+    # Read PKGBUILD metadata in a subshell — does not pollute this shell's env.
+    # Fall back to scalar syntax (${var}) for PKGBUILDs that don't use arrays.
     local pkgname pkgver pkgrel pkg_arch
     eval "$(bash -c '
         source "'"${pkgbuild_dir}"'/PKGBUILD"
-        echo "pkgname=${pkgname[0]}"
+        echo "pkgname=${pkgname[0]:-${pkgname}}"
         echo "pkgver=${pkgver}"
         echo "pkgrel=${pkgrel}"
-        echo "pkg_arch=${arch[0]}"
+        echo "pkg_arch=${arch[0]:-${arch}}"
     ')"
 
     local pkg_file="${pkgname}-${pkgver}-${pkgrel}-${pkg_arch}.pkg.tar.zst"
     local pkg_sig="${pkg_file}.sig"
 
+    # Skip if both package and signature already exist in the repo.
     if [[ -f "${ARCH_DIR}/${pkg_file}" && -f "${ARCH_DIR}/${pkg_sig}" ]]; then
         log "Package ${pkg_file} already exists — skipping build."
         return 0
@@ -188,40 +207,45 @@ build_package() {
 
     log "Building: ${pkgname} ${pkgver}-${pkgrel}"
 
-    # GPG private key — bind-mounted read-only into the container
+    # Write GPG private key to /tmp temp file — bind-mounted :ro into container.
     printf '%s\n' "$GPG_PRIVATE_KEY" > "${GPG_KEY_FILE}"
     chmod 644 "${GPG_KEY_FILE}"
 
-    # Builduser script — written to a host temp file, bind-mounted read-only.
-    # Avoids docker -e multiline mangling and nested quote escaping.
+    # Write the builduser inner script to a /tmp temp file — bind-mounted :ro.
+    # Quoted heredoc (<<'INNER') so $-references expand at runtime inside the
+    # container's shell, not here in the outer shell.
     local inner_script_file
     inner_script_file="$(mktemp /tmp/shani-inner-XXXXXX.sh)"
-    # Write with a quoted heredoc so the file contains literal $-references
-    # that will be expanded by builduser's shell at runtime, not now.
     cat > "${inner_script_file}" <<'INNER'
 #!/bin/bash
 set -euo pipefail
 export GNUPGHOME=/home/builduser/.gnupg
 
-gpg --batch --pinentry-mode loopback \
-    --passphrase "${GPG_PASSPHRASE}" \
+# Import GPG private key.
+# Passphrase piped via --passphrase-fd 0 — handles special characters safely.
+echo "${GPG_PASSPHRASE}" | gpg --batch --pinentry-mode loopback \
+    --passphrase-fd 0 \
     --import /tmp/gpg-private.asc \
     || { echo "GPG import failed"; exit 1; }
 
-cd "/pkg/${PKGBUILD_DIR}" || exit 1
+cd "/pkg/${PKGBUILD_DIR}" || { echo "Failed to cd into /pkg/${PKGBUILD_DIR}"; exit 1; }
 
+# Build the package.
 makepkg -sc --noconfirm \
     || { echo "makepkg failed for ${PKGBUILD_DIR}"; exit 1; }
 
-gpg --batch --pinentry-mode loopback \
-    --passphrase "${GPG_PASSPHRASE}" \
-    --detach-sign --armor \
+# Sign the package — BINARY detached signature (no --armor).
+# pacman and repo-add require a binary .sig; ASCII-armored sigs are rejected.
+echo "${GPG_PASSPHRASE}" | gpg --batch --pinentry-mode loopback \
+    --passphrase-fd 0 \
+    --detach-sign \
     --output "${PKG_FILE}.sig" \
     "${PKG_FILE}" \
     || { echo "GPG sign failed for ${PKG_FILE}"; exit 1; }
 INNER
-    chmod 755 "${inner_script_file}"  # must be set on host before mounting
+    chmod 755 "${inner_script_file}"
 
+    # Run the builder container.
     docker run --rm \
         -v "$(pwd):/pkg" \
         -v "${GPG_KEY_FILE}:/tmp/gpg-private.asc:ro" \
@@ -233,19 +257,18 @@ INNER
             set -euo pipefail
 
             # Refresh pacman db and ensure git is available for makepkg --syncdeps.
-            # This matches the working version and prevents stale-db build failures.
+            # Matches the working old script — prevents stale-db build failures.
             pacman -Sy --noconfirm git || { echo "pacman -Sy failed"; exit 1; }
 
-            # chown all of /pkg so builduser can write build artifacts anywhere
+            # builduser must own /pkg to write build artifacts.
             chown -R builduser:builduser /pkg
 
-            # GPG refuses to run if ~/.gnupg is missing or not chmod 700
+            # GPG refuses to run if ~/.gnupg is missing or not chmod 700.
             mkdir -p /home/builduser/.gnupg
             chown -R builduser:builduser /home/builduser
             chmod 700 /home/builduser/.gnupg
 
-            # su - resets the environment; re-inject secrets explicitly via env
-            # Note: /tmp/build-inner.sh is :ro mounted; chmod 755 set on host before mount
+            # su - resets the environment; re-inject secrets explicitly via env.
             env GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
                 PKGBUILD_DIR="${PKGBUILD_DIR}" \
                 PKG_FILE="${PKG_FILE}" \
@@ -254,6 +277,7 @@ INNER
 
     rm -f "${inner_script_file}"
 
+    # Move built artifacts into the public repo directory.
     local built=false
     for artifact in "${pkg_file}" "${pkg_sig}"; do
         if [[ -f "${pkgbuild_dir_clean}/${artifact}" ]]; then
@@ -264,6 +288,7 @@ INNER
         fi
     done
 
+    # Clean up makepkg work directories.
     rm -rf "${pkgbuild_dir_clean}/pkg" "${pkgbuild_dir_clean}/src"
 
     if [[ "$built" == false ]]; then
@@ -276,7 +301,8 @@ INNER
 }
 
 # ---------------------------------------------------------------------------
-# Rebuild the repo database from all current packages.
+# Rebuild the pacman repo database from all packages currently in ARCH_DIR.
+# Called once after all builds complete — not incrementally per-package.
 # ---------------------------------------------------------------------------
 rebuild_database() {
     local arch_dir="$1"
@@ -318,6 +344,7 @@ commit_and_push() {
     git -C "${repo_dir}" config --local user.email "shrinivas.v.kumbhar@gmail.com"
     git -C "${repo_dir}" add .
 
+    # Check staged changes (--cached), not working-tree diffs.
     if git -C "${repo_dir}" diff --cached --quiet; then
         log "No changes to commit."
         return 0
@@ -370,6 +397,7 @@ fi
 
 commit_and_push "shani-repo" "Update package repository with new builds"
 
+# Report failures and exit non-zero so CI marks the run as failed.
 if [[ ${#FAILED_PACKAGES[@]} -gt 0 ]]; then
     log "ERROR: The following packages failed to build:"
     for pkg in "${FAILED_PACKAGES[@]}"; do

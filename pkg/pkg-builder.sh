@@ -199,8 +199,8 @@ build_package() {
     docker run --rm \
         -v "$(pwd):/pkg" \
         -v "${GPG_KEY_FILE}:/tmp/gpg-private.asc:ro" \
-        -e PKGBUILD_DIR="${pkgbuild_dir}" \
-        -e GPG_PASSPHRASE \
+        -e PKGBUILD_DIR="${pkgbuild_dir%/}" \
+        -e GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
         -e PKG_FILE="${pkg_file}" \
         "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
@@ -236,17 +236,18 @@ build_package() {
 
     # Move artifacts to the arch directory
     local built=false
+    local pkgbuild_dir_clean="${pkgbuild_dir%/}"
     for artifact in "${pkg_file}" "${pkg_sig}"; do
-        if [[ -f "${pkgbuild_dir}/${artifact}" ]]; then
-            mv "${pkgbuild_dir}/${artifact}" "${ARCH_DIR}/"
+        if [[ -f "${pkgbuild_dir_clean}/${artifact}" ]]; then
+            mv "${pkgbuild_dir_clean}/${artifact}" "${ARCH_DIR}/"
             built=true
         else
-            log "Warning: expected artifact not found: ${pkgbuild_dir}/${artifact}"
+            log "Warning: expected artifact not found: ${pkgbuild_dir_clean}/${artifact}"
         fi
     done
 
     # Clean up makepkg working directories
-    rm -rf "${pkgbuild_dir}/pkg" "${pkgbuild_dir}/src"
+    rm -rf "${pkgbuild_dir_clean}/pkg" "${pkgbuild_dir_clean}/src"
 
     if [[ "$built" == false ]]; then
         log "Error: no artifacts produced for ${pkgname}" >&2

@@ -12,6 +12,10 @@ on:
           - gnome
           - plasma
           - cosmic
+  schedule:
+    # One day after build-image's Friday 20:30 UTC build (Sat ~2:00 AM IST).
+    # Saturday 20:30 UTC → Sunday 2:00 AM IST.
+    - cron: '30 20 * * 6'
 
 concurrency:
   group: promote-stable
@@ -27,7 +31,7 @@ jobs:
 
     strategy:
       matrix:
-        profile: ${{ fromJson(github.event.inputs.profile != 'all' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
+        profile: ${{ github.event_name == 'schedule' && fromJson('["gnome", "plasma"]') || fromJson(github.event.inputs.profile != 'all' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
       fail-fast: false
 
     env:

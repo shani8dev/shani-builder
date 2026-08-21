@@ -23,7 +23,7 @@ RUN pacman-key --init && \
     pacman -S --noconfirm --needed \
         archiso git pacman-contrib btrfs-progs arch-install-scripts \
         shim-signed sbsigntools mokutil mtools \
-        zsync rsync rclone openssh \
+        zsync zsync2 rsync rclone openssh \
         flatpak systemd dbus squashfuse snapd \
         mktorrent && \
     pacman -Scc --noconfirm

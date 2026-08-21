@@ -35,7 +35,7 @@ The Docker image (`shrinivasvkumbhar/shani-builder`) is built on `archlinux:base
 | Secure Boot | `shim-signed`, `sbsigntools`, `mokutil`, `mtools` |
 | App images | `flatpak`, `snapd`, `squashfuse` |
 | Uploads | `rclone`, `rsync`, `openssh` |
-| Release files | `mktorrent`, `zsync` |
+| Release files | `mktorrent`, `zsync`, `zsync2` (generates `.zsync` control files for differential updates — see shani-deploy) |
 | Package management | `git`, `pacman-contrib` |
 | Container runtime | `systemd`, `dbus` |
 

@@ -141,14 +141,19 @@ cleanup_old_versions() {
     for pkgbuild_dir in shani-pkgbuilds/*/; do
         [[ -f "${pkgbuild_dir}/PKGBUILD" ]] || continue
         local entry
+        # pkgbuild_dir comes from a directory name in shani-pkgbuilds — not
+        # necessarily trusted (a malicious or malformed name containing a
+        # quote could break out of the source "..." string below and run
+        # arbitrary code). Pass it as a real positional argument ($1) rather
+        # than interpolating it into the script string.
         entry=$(bash -c '
-            source "'"${pkgbuild_dir}"'/PKGBUILD"
+            source "$1/PKGBUILD"
             for pn in "${pkgname[@]}"; do
                 for pa in "${arch[@]}"; do
                     echo "${pn}-${pkgver}-${pkgrel}-${pa}"
                 done
             done
-        ')
+        ' _ "${pkgbuild_dir}")
         while IFS= read -r line; do
             [[ -n "$line" ]] && current_packages["$line"]=1
         done <<< "$entry"
@@ -185,14 +190,17 @@ build_package() {
 
     # Read PKGBUILD metadata in a subshell — does not pollute this shell's env.
     # Falls back to scalar syntax for PKGBUILDs that don't use arrays.
+    # pkgbuild_dir is passed as a positional argument ($1), not interpolated
+    # into the script string, so a directory name containing a quote can't
+    # break out and inject commands that then get eval'd below.
     local pkgname pkgver pkgrel pkg_arch
     eval "$(bash -c '
-        source "'"${pkgbuild_dir}"'/PKGBUILD"
+        source "$1/PKGBUILD"
         echo "pkgname=${pkgname[0]:-${pkgname}}"
         echo "pkgver=${pkgver}"
         echo "pkgrel=${pkgrel}"
         echo "pkg_arch=${arch[0]:-${arch}}"
-    ')"
+    ' _ "${pkgbuild_dir}")"
 
     local pkg_file="${pkgname}-${pkgver}-${pkgrel}-${pkg_arch}.pkg.tar.zst"
     local pkg_sig="${pkg_file}.sig"
@@ -209,20 +217,26 @@ build_package() {
     printf '%s\n' "$GPG_PRIVATE_KEY" > "${GPG_KEY_FILE}"
     chmod 644 "${GPG_KEY_FILE}"
 
-    # The outer shell expands $GPG_PASSPHRASE, $pkgbuild_dir_clean, and
-    # $pkg_file into the string before docker runs, so su - never needs to
-    # propagate them. Inner escaped quotes \" delimit su - builduser -c "...".
+    # PKGBUILD_DIR/PKG_FILE/GPG_PASSPHRASE are passed into the container only
+    # via `-e` (never interpolated into a command string) since docker's -e
+    # never re-parses a value as shell syntax. The outer bash -c below is a
+    # fixed, static script — it does NOT interpolate any of these values
+    # itself. `su -` still strips the environment before builduser's shell
+    # runs, so that inner script is built via printf %q, which shell-escapes
+    # each value so a PKGBUILD directory name or package filename containing
+    # a quote or shell metacharacter can't break out and run arbitrary code
+    # with access to the imported GPG signing key.
     docker run --rm \
         -v "$(pwd):/pkg" \
         -v "${GPG_KEY_FILE}:/home/builduser/.gnupg/temp-private.asc" \
         -e PKGBUILD_DIR="${pkgbuild_dir_clean}" \
         -e GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
         -e PKG_FILE="${pkg_file}" \
-        "${BUILDER_IMAGE}" bash -c "
+        "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
 
             # Refresh pacman db and ensure git is available for makepkg --syncdeps.
-            pacman -Sy --noconfirm git || { echo 'pacman -Sy failed'; exit 1; }
+            pacman -Sy --noconfirm git || { echo "pacman -Sy failed"; exit 1; }
 
             # builduser must own /pkg to write build artifacts.
             chown -R builduser:builduser /pkg
@@ -232,29 +246,24 @@ build_package() {
             chown -R builduser:builduser /home/builduser
             chmod 700 /home/builduser/.gnupg
 
-            su - builduser -c \"
-                export GNUPGHOME=/home/builduser/.gnupg
+            q_pass=$(printf %q "$GPG_PASSPHRASE")
+            q_dir=$(printf %q "$PKGBUILD_DIR")
+            q_file=$(printf %q "$PKG_FILE")
 
-                # Import GPG key — passphrase piped via stdin.
-                echo '${GPG_PASSPHRASE}' | gpg --batch --pinentry-mode loopback \\
-                    --passphrase-fd 0 \\
-                    --import /home/builduser/.gnupg/temp-private.asc \\
-                    || { echo 'GPG import failed'; exit 1; }
+            inner="export GNUPGHOME=/home/builduser/.gnupg
 
-                cd /pkg/${pkgbuild_dir_clean} || { echo 'cd failed'; exit 1; }
+# Import GPG key — passphrase piped via stdin.
+echo $q_pass | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo '"'"'GPG import failed'"'"'; exit 1; }
 
-                makepkg -sc --noconfirm \\
-                    || { echo 'makepkg failed for ${pkgbuild_dir_clean}'; exit 1; }
+cd /pkg/$q_dir || { echo '"'"'cd failed'"'"'; exit 1; }
 
-                # Sign — binary detached sig, NO --armor (pacman rejects ASCII sigs).
-                echo '${GPG_PASSPHRASE}' | gpg --batch --pinentry-mode loopback \\
-                    --passphrase-fd 0 \\
-                    --detach-sign \\
-                    --output '${pkg_file}.sig' \\
-                    '${pkg_file}' \\
-                    || { echo 'GPG sign failed for ${pkg_file}'; exit 1; }
-            \"
-        "
+makepkg -sc --noconfirm || { echo '"'"'makepkg failed'"'"'; exit 1; }
+
+# Sign — binary detached sig, NO --armor (pacman rejects ASCII sigs).
+echo $q_pass | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output ${q_file}.sig $q_file || { echo '"'"'GPG sign failed'"'"'; exit 1; }"
+
+            su - builduser -c "$inner"
+        '
 
     # Move built artifacts into the public repo directory.
     local built=false

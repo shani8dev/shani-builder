@@ -224,7 +224,7 @@ A `trap ... EXIT` at the top of the script ensures the randomized temp GPG key f
 
 ### Automated builds (GitHub Actions)
 
-The workflow at `.github/workflows/build.yaml` runs daily at midnight UTC and on any push to `main` that touches `pkg/pkg-builder.sh` or the workflow file itself. It checks out this repository fresh on each run (`actions/checkout@v4`) so the latest version of the script is always used — no stale cached copy. Secrets are passed via an `env:` block and `sudo --preserve-env` rather than as positional shell arguments.
+The workflow at `.github/workflows/build.yaml` runs daily at midnight UTC, on any push to `main` that touches `pkg/pkg-builder.sh` or the workflow file itself, and on demand via `workflow_dispatch` (`gh workflow run "Build and Package"` or the Actions tab's "Run workflow" button) — useful for verifying a fix without waiting for the next cron tick or a qualifying push. It checks out this repository fresh on each run (`actions/checkout@v4`) so the latest version of the script is always used — no stale cached copy. Secrets are passed via an `env:` block and `sudo --preserve-env` rather than as positional shell arguments.
 
 Concurrency group: `pkg-build` (in-progress runs are not cancelled, preventing two builds from writing to shani-repo simultaneously). Job timeout: 120 minutes.
 

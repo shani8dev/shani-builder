@@ -31,9 +31,27 @@ model is:
   the outer path must be verified with a `ps`/`/proc` polling loop during a
   real build to confirm the literal passphrase never appears in any process's
   cmdline.
-- **`StrictHostKeyChecking no`.** `pkg/pkg-builder.sh:113` disables SSH host key
-  checking in the generated SSH config, exposing package publish to SSH MITM.
-  Use `accept-new` instead.
+- **`builduser` has unrestricted passwordless root via sudo.**
+  `docker/Dockerfile`'s `builduser ALL=(ALL) NOPASSWD: ALL` means a
+  compromised PKGBUILD (this repo's `eval source` of PKGBUILD content is
+  otherwise unavoidable — see `AGENTS.md`) isn't actually contained by
+  running as an unprivileged user. Investigated in depth and deliberately
+  **not** fixed with a scoped sudoers allowlist — `chroot` and `pacman`
+  are both genuinely required and each independently equivalent to
+  unrestricted root regardless of allowlisting. See `AGENTS.md`'s
+  "Audit-verified known issues" and `AUDIT-HISTORY.md` for the full
+  reasoning; a real fix needs VM-level isolation or a mediating
+  privileged helper, not a code patch.
+
+**Already fixed, kept here only so this file doesn't silently drift from
+reality** (see `AGENTS.md`/`AUDIT-HISTORY.md` for verification detail):
+`StrictHostKeyChecking no` now pins GitHub's real host keys and uses
+`StrictHostKeyChecking yes`; `rebuild_database()` now signs the package
+database using the same mechanism as individual packages; every
+GPG-signing-key temp file used inside a `docker run` (both in
+`build_package()` and `rebuild_database()`) is a fresh `mktemp` per call,
+never shared across container invocations, after a shared file proved
+intermittently unwritable following a bind-mounted `chown -R`.
 
 ## Reporting a Vulnerability
 

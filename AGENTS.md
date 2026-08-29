@@ -78,6 +78,21 @@ isn't an acceptable trade.
 - `run_in_container.sh`'s `--userns=keep-id` flag is Podman-specific and
   breaks under plain Docker — detect the runtime before passing
   runtime-specific flags.
+- **A single temp file shared across many sequential `docker run` calls for
+  secret material is not reliably reusable, even for reads.** Bit this repo
+  twice: `rebuild_database()` originally reused `build_package()`'s
+  `GPG_KEY_FILE`, and a container-side `chown -R builduser:builduser
+  /home/builduser` (a real bind mount — this changes the actual host file's
+  ownership, not a container-local copy) left it unreadable by the next
+  writer. After giving `rebuild_database()` its own file, `build_package()`
+  itself still intermittently failed the *same* way — 25 of 28 builds in
+  one real run reused its own per-call file fine, 3 didn't — proving even a
+  single function's own temp file isn't safe to treat as reusable across
+  container invocations. The only fix that held: a genuinely fresh
+  `mktemp`'d file on every single call, never touched by more than one
+  `docker run`, cleaned up via a `RETURN` trap. If you're adding a new
+  bind-mounted secret file, give it its own `mktemp` call per use — don't
+  hoist it to a shared variable "for efficiency."
 
 ## Audit-verified known issues (confirmed present)
 
@@ -132,7 +147,30 @@ section is deliberately just the current-state summary.
 - **iptables-nft.** `docker/Dockerfile:22` installs `iptables-nft`.
 - **CI status.** 4 CI workflows: `build-docker.yaml`, `build.yaml`,
   `build-image.yml`, `promote-stable.yml` with concurrency groups and
-  timeouts (60/120/360/15 min).
+  timeouts (60/120/360/15 min). `build.yaml` also has `workflow_dispatch`
+  now, so it can be triggered on demand (`gh workflow run "Build and
+  Package"`), not just via the daily cron or a path-filtered push.
+- **Shared temp GPG key file across sequential `docker run` calls — FIXED
+  (twice).** `rebuild_database()` originally reused `build_package()`'s
+  `GPG_KEY_FILE`; a bind-mounted `chown -R` inside one container run
+  changed the real host file's ownership, breaking the next writer.
+  Giving `rebuild_database()` its own file wasn't enough either —
+  `build_package()`'s *own* per-call file still failed intermittently
+  (25/28 real builds succeeded, 3/28 hit "Permission denied" on the exact
+  same write). Fixed for real by making every `build_package()` call
+  `mktemp` a brand-new file, never shared or reused, shredded via a
+  `RETURN` trap. See `AUDIT-HISTORY.md` and the "Things that have bitten
+  this repo" section above for the full detail.
+- **`validpgpkeys` never imported before `makepkg` — FIXED.**
+  `build_package()` had no mechanism to pre-import a PKGBUILD's
+  `validpgpkeys` before running `makepkg`, so any package needing
+  upstream GPG source verification (e.g. `game-devices-udev`) failed CI
+  with "unknown public key" even when the PKGBUILD's `validpgpkeys` was
+  completely correct — the builder image simply never had that key.
+  Fixed by extracting `validpgpkeys` alongside the existing
+  `pkgname`/`pkgver`/etc. metadata pull and importing each listed key from
+  a keyserver before `makepkg` runs, generalized across any current or
+  future package rather than special-cased to one.
 
 ## Cross-repo impact — check before calling a fix complete
 

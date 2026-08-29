@@ -122,3 +122,72 @@ inflate the main file back to unreadable length.
 - **CI status.** 4 CI workflows: `build-docker.yaml`, `build.yaml`,
   `build-image.yml`, `promote-stable.yml` with concurrency groups and
   timeouts (60/120/360/15 min).
+- **`rebuild_database()` "Permission denied" on its GPG key temp file —
+  FIXED, found live in a real CI run.** Triggered by a real production
+  incident: a `git merge` of `shani-repo` had put a mismatched database
+  signature into the live repo (see `shani-repo/AGENTS.md` for that side
+  of the story), so `pkg-builder.sh` needed to actually run
+  `rebuild_database()` for real to regenerate it. That run failed after
+  25 successful package builds with "Permission denied" writing to
+  `GPG_KEY_FILE` — the same global temp file `build_package()` had
+  already bind-mounted into 25 prior `docker run` invocations, each of
+  which runs `chown -R builduser:builduser /home/builduser` inside the
+  container. Since the bind mount means that `chown -R` changes the
+  REAL HOST FILE's ownership (not a container-local copy), the file ended
+  up owned by `builduser`'s host-mapped UID, unwritable by the actual
+  script process. Fixed by giving `rebuild_database()` its own dedicated
+  `DB_GPG_KEY_FILE` (`mktemp`'d fresh, `chmod 600`, shredded via the
+  existing `cleanup()` trap), never touched by any `build_package()`
+  container run.
+- **The same class of bug recurring intermittently inside
+  `build_package()` itself — FIXED.** After the fix above, a subsequent
+  real run (28 packages) hit the *identical* "Permission denied" on
+  `build_package()`'s *own* per-function `GPG_KEY_FILE` write — but only
+  for 3 of the 28 builds; the other 25 reused the same file successfully.
+  This proved the failure is racy/non-deterministic, not a one-time
+  mutation from a single earlier call — a shared file reused across many
+  sequential privileged container invocations was never actually safe,
+  it just usually got lucky. Fixed by giving *every single*
+  `build_package()` call its own fresh, `mktemp`'d, never-before-touched
+  file (`pkg_gpg_key_file`), removing the old shared global entirely
+  (confirmed dead via `grep`), cleaned up via a `trap ... RETURN` covering
+  every return path (including the two early `return 1`s), plus a
+  catch-all `find /tmp -maxdepth 1 -name 'shani-gpg-pkg-*.asc'` sweep in
+  `cleanup()` for defense in depth. Verified by a subsequent real,
+  complete CI run (`33265684214`) with **zero** "Permission denied"
+  errors across every package built, proving both fixes fully closed the
+  issue before moving on to unrelated PKGBUILD-level failures.
+- **`validpgpkeys` never pre-imported before `makepkg` — FIXED.** The same
+  clean run above still had 3 unrelated failures, one of which
+  (`game-devices-udev`) failed with "unknown public key
+  D6A4F386B4881229" even though `game-devices-udev/PKGBUILD`'s
+  `validpgpkeys=('6E58E886A8E07538A2485FAED6A4F386B4881229')` already
+  listed exactly that fingerprint (confirmed: the CI error's 16 trailing
+  hex chars match the tail of the listed 40-char fingerprint exactly) —
+  the problem was never the PKGBUILD, it was that nothing in
+  `pkg-builder.sh` or `docker/Dockerfile` ever imports a PKGBUILD's
+  `validpgpkeys` into the builder's keyring; only the one Shanios
+  project-signing key is pre-imported at image-build time. Fixed
+  generally rather than special-casing this one package: `build_package()`
+  now also extracts `validpgpkeys[*]` from the sourced PKGBUILD (same
+  `bash -c` metadata pull used for `pkgname`/`pkgver`/etc.), passes it
+  into the container as `-e PGP_KEYS`, and imports each listed key from
+  `keyserver.ubuntu.com` (falling back to `hkps://keys.openpgp.org`)
+  before `makepkg` runs. Verified the tricky nested quoting (the
+  container script is itself embedded in a host-level single-quoted
+  string, and further passes a sub-script to `su -c` as a *second*
+  layer of quoting) by reconstructing the exact same nesting locally
+  with stubbed `pacman`/`chown` and dummy env vars, capturing what the
+  constructed inner script actually evaluates to, and confirming it
+  parses as valid bash with `$PGP_KEYS`/`$key` correctly deferred to the
+  `su`-spawned shell rather than expanded too early — a plain top-level
+  `bash -n` on the outer script would not have caught an escaping bug at
+  that depth. **All three fixes confirmed together in one real CI run**
+  (`33266570244`, triggered on the push containing this fix plus the
+  `foo2zjs-nightly`/`shani-desktop-cosmic` PKGBUILD fixes in
+  `shani-pkgbuilds` — see that repo's `AGENTS.md`): completed green in
+  3m50s (short because every already-built package was correctly
+  skipped, leaving only the 3 previously-failing ones to build), and
+  `shani-repo` now has real, signed artifacts for all three
+  (`foo2zjs-nightly-20201127-2`, `game-devices-udev-1.0-1`,
+  `shani-desktop-cosmic-1.0-6`).

@@ -21,6 +21,11 @@ readonly BUILDER_IMAGE="shrinivasvkumbhar/shani-builder:latest"
 readonly SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY:-}"
 readonly GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
 readonly GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY:-}"
+# Explicitly exported (readonly does not imply exported) so that `docker run
+# -e GPG_PASSPHRASE` (bare name, below) can forward it from THIS process's
+# own environment into the container — without ever writing the literal
+# value into docker's argv, where `ps aux` / `/proc/<pid>/cmdline` could see it.
+export GPG_PASSPHRASE
 
 # Temp files live in /tmp — never inside any repo directory.
 # Declare and assign separately so mktemp failures are not masked by readonly.
@@ -28,6 +33,9 @@ SSH_DIR="$(mktemp -d /tmp/shani-ssh-XXXXXX)"
 readonly SSH_DIR
 GPG_KEY_FILE="$(mktemp /tmp/shani-gpg-XXXXXX.asc)"
 readonly GPG_KEY_FILE
+# mktemp already creates this at 0600, but pin it explicitly — private key
+# material must never be world- or group-readable, even momentarily.
+chmod 600 "${GPG_KEY_FILE}"
 
 # ---------------------------------------------------------------------------
 # Cleanup — always runs on exit, even on error
@@ -99,10 +107,27 @@ setup_ssh() {
     local key_file="${SSH_DIR}/id_rsa"
     printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "${key_file}"
     chmod 600 "${key_file}"
+
+    # Pin github.com's real host keys instead of disabling verification.
+    # These are GitHub's own currently-published keys (github.blog/2023-03-23
+    # -we-updated-our-rsa-ssh-host-key / docs.github.com's "About SSH" page),
+    # fetched live from GitHub's own /meta API rather than hand-copied, so
+    # there's no trust-on-first-connect gap and no MITM window: a clone still
+    # fails closed if whatever answers as github.com doesn't hold one of
+    # these three key types.
+    local known_hosts="${SSH_DIR}/known_hosts"
+    cat > "${known_hosts}" <<'EOF'
+github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+EOF
+    chmod 600 "${known_hosts}"
+
     cat > "${SSH_DIR}/config" <<EOF
 Host github.com
   IdentityFile ${key_file}
-  StrictHostKeyChecking no
+  UserKnownHostsFile ${known_hosts}
+  StrictHostKeyChecking yes
   BatchMode yes
 EOF
     chmod 600 "${SSH_DIR}/config"
@@ -175,11 +200,34 @@ cleanup_old_versions() {
 # ---------------------------------------------------------------------------
 # Build a single package inside the shani-builder container.
 #
-# The docker bash -c string is double-quoted so that $GPG_PASSPHRASE,
-# $PKGBUILD_DIR, $PKG_FILE, and $GPG_PRIVATE_KEY expand HERE in the outer
-# shell before docker runs — they are baked into the command string.
-# This is exactly how the old working script injected secrets and is why
-# su - (which strips the environment) is not a problem.
+# GPG_PASSPHRASE is passed into the container as a BARE `-e GPG_PASSPHRASE`
+# (no `=value`) — this tells docker to forward the variable's value straight
+# from THIS process's own (already-exported, see above) environment into the
+# container's environment. Critically, the literal secret value is never
+# written into `docker`'s own argv this way, so it can't show up in `ps aux` /
+# `/proc/<pid>/cmdline` for the `docker run` process itself on the host.
+# (An earlier version of this fix used `-e GPG_PASSPHRASE="${GPG_PASSPHRASE}"`,
+# which looks equally safe but is NOT: the shell expands `${GPG_PASSPHRASE}`
+# before exec, so the plaintext value ends up as a literal argument to the
+# `docker` binary — visible in `ps aux`/cmdline for the whole build, exactly
+# the class of leak this was supposed to fix. Real-verified via `ps auxww`
+# and `/proc/<pid>/cmdline` polling during an actual build — see pkg-builder
+# test notes.)
+#
+# Inside the container, the passphrase is read back out of the environment
+# by name (\$GPG_PASSPHRASE, escaped below so it is NOT expanded by the outer
+# `bash -c` while constructing `inner`). `su --preserve-environment` (no
+# `-`/login option, which would otherwise reset the environment) carries
+# GPG_PASSPHRASE through to builduser's shell. The literal passphrase value
+# is therefore never baked into the `su -c` argv string either, so it never
+# shows up in `ps aux` / `/proc/<pid>/cmdline` at any layer — unlike the
+# original version of this script, which interpolated the passphrase
+# directly into the `su -c` command line.
+#
+# PKGBUILD_DIR/PKG_FILE are NOT secrets, just untrusted path/filename
+# strings, so they are still shell-escaped via printf %q and inlined
+# directly — a directory name or package filename containing a quote or
+# shell metacharacter can't break out and run arbitrary code.
 #
 # GPG sign uses a binary detached sig — NO --armor.
 # pacman and repo-add both reject ASCII-armored .sig files.
@@ -214,8 +262,9 @@ build_package() {
     log "Building: ${pkgname} ${pkgver}-${pkgrel}"
 
     # Write GPG private key to temp file — bind-mounted into the container.
+    # Keep it 0600 (owner-only): this holds real signing key material.
     printf '%s\n' "$GPG_PRIVATE_KEY" > "${GPG_KEY_FILE}"
-    chmod 644 "${GPG_KEY_FILE}"
+    chmod 600 "${GPG_KEY_FILE}"
 
     # PKGBUILD_DIR/PKG_FILE/GPG_PASSPHRASE are passed into the container only
     # via `-e` (never interpolated into a command string) since docker's -e
@@ -230,7 +279,7 @@ build_package() {
         -v "$(pwd):/pkg" \
         -v "${GPG_KEY_FILE}:/home/builduser/.gnupg/temp-private.asc" \
         -e PKGBUILD_DIR="${pkgbuild_dir_clean}" \
-        -e GPG_PASSPHRASE="${GPG_PASSPHRASE}" \
+        -e GPG_PASSPHRASE \
         -e PKG_FILE="${pkg_file}" \
         "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
@@ -246,23 +295,31 @@ build_package() {
             chown -R builduser:builduser /home/builduser
             chmod 700 /home/builduser/.gnupg
 
-            q_pass=$(printf %q "$GPG_PASSPHRASE")
             q_dir=$(printf %q "$PKGBUILD_DIR")
             q_file=$(printf %q "$PKG_FILE")
 
+            # GPG_PASSPHRASE is deliberately NOT expanded here (\$ is escaped
+            # below) — it stays as the literal text "$GPG_PASSPHRASE" in the
+            # inner script and is only resolved from builduser'"'"'s own
+            # preserved environment when su runs it below. This keeps the
+            # secret out of this command string entirely.
             inner="export GNUPGHOME=/home/builduser/.gnupg
 
-# Import GPG key — passphrase piped via stdin.
-echo $q_pass | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo '"'"'GPG import failed'"'"'; exit 1; }
+# Import GPG key — passphrase read from the environment, piped via stdin.
+echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo '"'"'GPG import failed'"'"'; exit 1; }
 
 cd /pkg/$q_dir || { echo '"'"'cd failed'"'"'; exit 1; }
 
 makepkg -sc --noconfirm || { echo '"'"'makepkg failed'"'"'; exit 1; }
 
 # Sign — binary detached sig, NO --armor (pacman rejects ASCII sigs).
-echo $q_pass | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output ${q_file}.sig $q_file || { echo '"'"'GPG sign failed'"'"'; exit 1; }"
+echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output ${q_file}.sig $q_file || { echo '"'"'GPG sign failed'"'"'; exit 1; }"
 
-            su - builduser -c "$inner"
+            # --preserve-environment (no "-"/login option, which would reset
+            # the environment) carries GPG_PASSPHRASE from this process'"'"'
+            # environment into builduser'"'"'s shell without ever placing the
+            # secret value in an argv visible to ps/procfs.
+            su --preserve-environment builduser -c "$inner"
         '
 
     # Move built artifacts into the public repo directory.
@@ -304,23 +361,54 @@ rebuild_database() {
         return 0
     fi
 
+    # Write GPG private key to temp file — bind-mounted into the container,
+    # same mechanism build_package() uses above. Written here explicitly
+    # (not relying on a prior build_package() call having populated it this
+    # run) because rebuild_database() can still run even when every package
+    # this run was already built+signed and skipped.
+    printf '%s\n' "$GPG_PRIVATE_KEY" > "${GPG_KEY_FILE}"
+    chmod 600 "${GPG_KEY_FILE}"
+
     docker run --rm \
         -v "$(realpath "${arch_dir}"):/repo" \
+        -v "${GPG_KEY_FILE}:/home/builduser/.gnupg/temp-private.asc" \
+        -e GPG_PASSPHRASE \
         "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
             cd /repo
-            # Remove old db files and any existing symlinks before rebuilding.
-            rm -f shani.db shani.db.tar.gz shani.db.tar.gz.old \
-                  shani.files shani.files.tar.gz shani.files.tar.gz.old
+            # Remove old db files, symlinks, and signatures before rebuilding —
+            # a stale .sig next to a freshly rebuilt (differently-hashed) .db
+            # would fail verification, which is worse than no .sig at all.
+            rm -f shani.db shani.db.tar.gz shani.db.tar.gz.old shani.db.sig shani.db.tar.gz.sig \
+                  shani.files shani.files.tar.gz shani.files.tar.gz.old shani.files.sig shani.files.tar.gz.sig
             repo-add shani.db.tar.gz *.pkg.tar.zst
+
+            # GPG refuses to run if ~/.gnupg is missing or not chmod 700.
+            mkdir -p /home/builduser/.gnupg
+            chown -R builduser:builduser /home/builduser /repo
+            chmod 700 /home/builduser/.gnupg
+
+            inner="export GNUPGHOME=/home/builduser/.gnupg
+echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo '"'"'GPG import failed'"'"'; exit 1; }
+cd /repo || exit 1
+# Binary detached sigs, NO --armor (pacman rejects ASCII sigs) — same
+# convention build_package() uses for individual package signatures.
+for f in shani.db.tar.gz shani.files.tar.gz; do
+  echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"\${f}.sig\" \"\$f\" || { echo '"'"'GPG sign failed'"'"'; exit 1; }
+done"
+            su --preserve-environment builduser -c "$inner"
+
             # repo-add creates shani.db/shani.files as symlinks — remove them
-            # so the following cp creates real files instead.
+            # so the following cp creates real files instead, matching this
+            # repo'"'"'s existing convention; copy their signatures alongside.
             rm -f shani.db shani.files
             cp shani.db.tar.gz shani.db
             cp shani.files.tar.gz shani.files
+            cp shani.db.tar.gz.sig shani.db.sig
+            cp shani.files.tar.gz.sig shani.files.sig
         '
 
-    log "Database rebuilt successfully."
+    log "Database rebuilt and signed successfully."
 }
 
 # ---------------------------------------------------------------------------

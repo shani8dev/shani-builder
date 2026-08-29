@@ -1,6 +1,6 @@
 # shani-builder
 
-The shared Docker build environment and package builder for [Shani OS](https://github.com/shani8dev). This repository serves two distinct purposes:
+The shared Docker build environment and package builder for [Shanios](https://github.com/shani8dev). This repository serves two distinct purposes:
 
 1. **`docker/`** — A privileged Arch Linux–based Docker image used as the build container by [shani-install-media](https://github.com/shani8dev/shani-install-media) for assembling system images and ISOs.
 2. **`pkg/`** — An automated script that builds, signs, and publishes custom Arch packages to the [shani-repo](https://github.com/shani8dev/shani-repo) package repository.
@@ -29,7 +29,7 @@ The shared Docker build environment and package builder for [Shani OS](https://g
 
 ### What it contains
 
-The Docker image (`shrinivasvkumbhar/shani-builder`) is built on `archlinux:base-devel` and pre-installs everything needed to build Shani OS images and ISOs:
+The Docker image (`shrinivasvkumbhar/shani-builder`) is built on `archlinux:base-devel` and pre-installs everything needed to build Shanios images and ISOs:
 
 | Category | Packages |
 |----------|----------|
@@ -40,9 +40,10 @@ The Docker image (`shrinivasvkumbhar/shani-builder`) is built on `archlinux:base
 | Release files | `mktorrent`, `zsync`, `zsync2` (generates `.zsync` control files for differential updates — see shani-deploy) |
 | Package management | `git`, `pacman-contrib` |
 | Container runtime | `systemd`, `dbus` |
+| Firewall / networking | `iptables-nft` |
 
 The image also:
-- Initialises the pacman keyring, imports the Shani OS signing key (`7B927BFFD4A9EAAA8B666B77DE217F3DA8014792`) from `keys.openpgp.org`, and locally signs it
+- Initialises the pacman keyring, imports the Shanios signing key (`7B927BFFD4A9EAAA8B666B77DE217F3DA8014792`) from `keys.openpgp.org`, and locally signs it
 - Adds the `[shani]` custom pacman repository at `https://repo.shani.dev/x86_64` to `/etc/pacman.conf`
 - Installs `shani-keyring` and populates the Shani pacman keyring
 - Creates a `builduser` account (`/home/builduser`) with passwordless sudo for non-root build steps
@@ -74,6 +75,8 @@ DOCKER_USERNAME=yourusername ./build-docker-image.sh
 
 The workflow at `.github/workflows/build-docker.yaml` triggers on any push to `main` that touches anything under `docker/` or the workflow file itself. It uses `docker/build-push-action` with registry-based layer caching to avoid re-downloading Arch packages on every rebuild.
 
+Concurrency group: `docker-build` (in-progress runs are not cancelled, so a half-built image is never pushed). Job timeout: 60 minutes.
+
 The image is tagged three ways on each push:
 
 | Tag | Example | Purpose |
@@ -93,6 +96,8 @@ The image is tagged three ways on each push:
 ## Part 1b: Install Media Build Workflow (`build-image.yml`)
 
 This repository also hosts the GitHub Actions workflow that drives [shani-install-media](https://github.com/shani8dev/shani-install-media) builds. It lives at `.github/workflows/build-image.yml` and runs on a schedule (every Friday at 20:30 UTC) or via manual `workflow_dispatch`.
+
+Concurrency group: `image-build` (in-progress runs are not cancelled). Job timeout: 360 minutes.
 
 ### What the workflow does
 
@@ -149,6 +154,8 @@ stable channel is a distinct action, not an automatic step after a build
 finishes. Runs on a schedule (Saturday 20:30 UTC — one day after
 `build-image.yml`'s Friday build) or via manual `workflow_dispatch`.
 
+Concurrency group: `promote-stable` (in-progress runs are not cancelled). Job timeout: 15 minutes.
+
 ### `workflow_dispatch` inputs
 
 | Input | Default | Description |
@@ -200,7 +207,7 @@ Supported architectures: `x86_64` → `./shani-repo/x86_64/`, `armv7l`/`aarch64`
 
 ### Usage
 
-Credentials are read exclusively from environment variables — **do not pass them as positional arguments**, as those appear in `ps aux` output and the runner process list:
+Credits are read exclusively from environment variables — **do not pass them as positional arguments**, as those appear in `ps aux` output and the runner process list. Also: do **not** pass secrets via `docker run -e VAR="$VAR"` or `podman run -e VAR="$VAR"` — the literal value enters the container runtime's own argv. Pass the bare `-e VAR` (no `=value`) with the value exported beforehand.
 
 ```bash
 export SSH_PRIVATE_KEY="-----BEGIN OPENSSH PRIVATE KEY-----
@@ -218,6 +225,8 @@ A `trap ... EXIT` at the top of the script ensures the randomized temp GPG key f
 ### Automated builds (GitHub Actions)
 
 The workflow at `.github/workflows/build.yaml` runs daily at midnight UTC and on any push to `main` that touches `pkg/pkg-builder.sh` or the workflow file itself. It checks out this repository fresh on each run (`actions/checkout@v4`) so the latest version of the script is always used — no stale cached copy. Secrets are passed via an `env:` block and `sudo --preserve-env` rather than as positional shell arguments.
+
+Concurrency group: `pkg-build` (in-progress runs are not cancelled, preventing two builds from writing to shani-repo simultaneously). Job timeout: 120 minutes.
 
 ```yaml
 # Requires these repository secrets:
@@ -253,7 +262,7 @@ The workflow at `.github/workflows/build.yaml` runs daily at midnight UTC and on
 | Repository | Description |
 |------------|-------------|
 | [shani-install-media](https://github.com/shani8dev/shani-install-media) | ISO and system image build pipeline — consumes this Docker image |
-| [shani-pkgbuilds](https://github.com/shani8dev/shani-pkgbuilds) | PKGBUILD sources for Shani OS custom packages |
+| [shani-pkgbuilds](https://github.com/shani8dev/shani-pkgbuilds) | PKGBUILD sources for Shanios custom packages |
 | [shani-repo](https://github.com/shani8dev/shani-repo) | Published Arch-compatible package repository (`https://repo.shani.dev`) |
 
 ---

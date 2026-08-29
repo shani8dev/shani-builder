@@ -262,13 +262,14 @@ build_package() {
     # pkgbuild_dir is passed as a positional argument ($1), not interpolated
     # into the script string, so a directory name containing a quote can't
     # break out and inject commands that then get eval'd below.
-    local pkgname pkgver pkgrel pkg_arch
+    local pkgname pkgver pkgrel pkg_arch pgp_keys
     eval "$(bash -c '
         source "$1/PKGBUILD"
         echo "pkgname=${pkgname[0]:-${pkgname}}"
         echo "pkgver=${pkgver}"
         echo "pkgrel=${pkgrel}"
         echo "pkg_arch=${arch[0]:-${arch}}"
+        echo "pgp_keys=${validpgpkeys[*]:-}"
     ' _ "${pkgbuild_dir}")"
 
     local pkg_file="${pkgname}-${pkgver}-${pkgrel}-${pkg_arch}.pkg.tar.zst"
@@ -316,6 +317,7 @@ build_package() {
         -e PKGBUILD_DIR="${pkgbuild_dir_clean}" \
         -e GPG_PASSPHRASE \
         -e PKG_FILE="${pkg_file}" \
+        -e PGP_KEYS="${pgp_keys}" \
         "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
 
@@ -342,6 +344,14 @@ build_package() {
 
 # Import GPG key — passphrase read from the environment, piped via stdin.
 echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo '"'"'GPG import failed'"'"'; exit 1; }
+
+# Pre-import each upstream source-verification key a PKGBUILD'"'"'s
+# validpgpkeys lists (only set when the PKGBUILD needs makepkg'"'"'s
+# SRCPGPCHECK) — not every builder image ships every upstream
+# maintainer'"'"'s key, and makepkg hard-fails source verification on an
+# unknown key even when the signature itself is otherwise good. Tries a
+# second keyserver since either can be transiently unreachable from CI.
+for key in \$PGP_KEYS; do gpg --batch --keyserver keyserver.ubuntu.com --recv-keys \"\$key\" 2>/dev/null || gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys \"\$key\" || { echo '"'"'Failed to import PGP key'"'"' \"\$key\"; exit 1; }; done
 
 cd /pkg/$q_dir || { echo '"'"'cd failed'"'"'; exit 1; }
 

@@ -9,6 +9,7 @@ on:
       - '.github/workflows/build.yaml'
   schedule:
     - cron: '0 0 * * *'  # Daily at midnight UTC
+  workflow_dispatch: {}  # allows an on-demand run from the Actions tab / gh CLI
 
 # Cancel an in-progress run of this workflow if a newer one starts,
 # preventing two builds from writing to shani-repo simultaneously.

@@ -31,23 +31,22 @@ export GPG_PASSPHRASE
 # Declare and assign separately so mktemp failures are not masked by readonly.
 SSH_DIR="$(mktemp -d /tmp/shani-ssh-XXXXXX)"
 readonly SSH_DIR
-GPG_KEY_FILE="$(mktemp /tmp/shani-gpg-XXXXXX.asc)"
-readonly GPG_KEY_FILE
-# mktemp already creates this at 0600, but pin it explicitly — private key
-# material must never be world- or group-readable, even momentarily.
-chmod 600 "${GPG_KEY_FILE}"
-# rebuild_database() gets its OWN key file, deliberately never reused by
-# build_package(). Found live: every build_package() container run's
-# `chown -R builduser:builduser /home/builduser` recurses into this
-# bind-mounted file (it's a real bind mount, so that chown lands on the
-# HOST file, not a container-local copy), leaving it owned by whatever UID
-# "builduser" maps to inside the container. rebuild_database() runs AFTER
-# every package build, reusing the shared GPG_KEY_FILE, so its own
-# host-side `printf ... > "${GPG_KEY_FILE}"` was failing with
-# "Permission denied" against a file the last build's container had just
-# taken ownership of. Two independent files sidesteps this — this one is
-# bind-mounted ONLY by rebuild_database(), never touched by any
-# build_package() container run.
+
+# GPG key material is NEVER written to one shared, reused temp file —
+# each of build_package()'s (many, sequential) calls gets its own fresh
+# /tmp/shani-gpg-pkg-XXXXXX.asc (created and shredded inside the function,
+# via a RETURN trap), and rebuild_database() gets its own
+# DB_GPG_KEY_FILE below. Found live why a single shared file doesn't work:
+# every container run's `chown -R builduser:builduser /home/builduser`
+# recurses into the bind-mounted key file (it's a real bind mount, so the
+# chown lands on the HOST file, not a container-local copy) — and reusing
+# that same file across many sequential container runs turned out to be
+# genuinely racy, not a one-time deterministic break: 25 of 28 builds in
+# one real run reused the old shared file fine, but 3 others failed with
+# "Permission denied" on the exact same write, and rebuild_database()
+# (running after all of them) failed the same way every time. A fresh,
+# never-before-touched-by-any-container file per use sidesteps the whole
+# class of issue rather than trying to pin down the exact race.
 DB_GPG_KEY_FILE="$(mktemp /tmp/shani-gpg-db-XXXXXX.asc)"
 readonly DB_GPG_KEY_FILE
 chmod 600 "${DB_GPG_KEY_FILE}"
@@ -57,10 +56,14 @@ chmod 600 "${DB_GPG_KEY_FILE}"
 # ---------------------------------------------------------------------------
 cleanup() {
     if command -v shred &>/dev/null; then
-        shred -u "${GPG_KEY_FILE}" 2>/dev/null || rm -f "${GPG_KEY_FILE}"
         shred -u "${DB_GPG_KEY_FILE}" 2>/dev/null || rm -f "${DB_GPG_KEY_FILE}"
+        # Catch-all for any per-package key file whose own RETURN-trap
+        # shred didn't run (e.g. the whole script was killed mid-build) —
+        # each build_package() call already shreds its own on every normal
+        # exit path, this is just a safety net.
+        find /tmp -maxdepth 1 -name 'shani-gpg-pkg-*.asc' -exec shred -u {} \; 2>/dev/null || true
     else
-        rm -f "${GPG_KEY_FILE}" "${DB_GPG_KEY_FILE}"
+        rm -f "${DB_GPG_KEY_FILE}" /tmp/shani-gpg-pkg-*.asc
     fi
     rm -rf "${SSH_DIR}"
 }
@@ -279,10 +282,24 @@ build_package() {
 
     log "Building: ${pkgname} ${pkgver}-${pkgrel}"
 
-    # Write GPG private key to temp file — bind-mounted into the container.
+    # A FRESH key file per call, not the old shared GPG_KEY_FILE — found
+    # live that reusing one file bind-mounted into many sequential docker
+    # containers (each one's `chown -R builduser:builduser /home/builduser`
+    # recurses into it, since it's a real bind mount) is intermittently
+    # racy: 25 of 28 builds in one real run reused it fine, but 3 others
+    # failed with "Permission denied" on this exact write — not a
+    # deterministic one-time mutation, so a single reused file was never
+    # reliable to begin with. A fresh, never-before-touched-by-any-
+    # container file per call sidesteps the whole class of issue. Shredded
+    # via a RETURN trap so it's cleaned up on every exit path (including
+    # the two `return 1`s below), not just the happy path.
+    local pkg_gpg_key_file
+    pkg_gpg_key_file="$(mktemp /tmp/shani-gpg-pkg-XXXXXX.asc)"
+    trap 'command -v shred &>/dev/null && shred -u "${pkg_gpg_key_file}" 2>/dev/null || rm -f "${pkg_gpg_key_file}"' RETURN
+
     # Keep it 0600 (owner-only): this holds real signing key material.
-    printf '%s\n' "$GPG_PRIVATE_KEY" > "${GPG_KEY_FILE}"
-    chmod 600 "${GPG_KEY_FILE}"
+    printf '%s\n' "$GPG_PRIVATE_KEY" > "${pkg_gpg_key_file}"
+    chmod 600 "${pkg_gpg_key_file}"
 
     # PKGBUILD_DIR/PKG_FILE/GPG_PASSPHRASE are passed into the container only
     # via `-e` (never interpolated into a command string) since docker's -e
@@ -295,7 +312,7 @@ build_package() {
     # with access to the imported GPG signing key.
     docker run --rm \
         -v "$(pwd):/pkg" \
-        -v "${GPG_KEY_FILE}:/home/builduser/.gnupg/temp-private.asc" \
+        -v "${pkg_gpg_key_file}:/home/builduser/.gnupg/temp-private.asc" \
         -e PKGBUILD_DIR="${pkgbuild_dir_clean}" \
         -e GPG_PASSPHRASE \
         -e PKG_FILE="${pkg_file}" \
@@ -379,14 +396,12 @@ rebuild_database() {
         return 0
     fi
 
-    # Write GPG private key to its OWN temp file (DB_GPG_KEY_FILE, never the
-    # shared GPG_KEY_FILE build_package() uses — see its declaration up top
-    # for why: reusing that one meant this write could fail with
-    # "Permission denied" against a file the last build's container had
-    # just chown'd). Written here explicitly (not relying on a prior
-    # build_package() call having populated it this run) because
-    # rebuild_database() can still run even when every package this run
-    # was already built+signed and skipped.
+    # Write GPG private key to its OWN dedicated temp file (DB_GPG_KEY_FILE,
+    # declared up top — see there for why this is never shared with
+    # build_package()'s own per-call files). Written here explicitly (not
+    # relying on a prior build_package() call having populated it this run)
+    # because rebuild_database() can still run even when every package
+    # this run was already built+signed and skipped.
     printf '%s\n' "$GPG_PRIVATE_KEY" > "${DB_GPG_KEY_FILE}"
     chmod 600 "${DB_GPG_KEY_FILE}"
 

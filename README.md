@@ -254,6 +254,7 @@ Concurrency group: `pkg-build` (in-progress runs are not cancelled, preventing t
 | `R2_SECRET_ACCESS_KEY` | `build-image.yml` | Cloudflare R2 secret key _(optional)_ |
 | `R2_ACCOUNT_ID` | `build-image.yml` | Cloudflare account ID _(optional)_ |
 | `R2_BUCKET` | `build-image.yml` | R2 bucket name _(optional)_ |
+| `DISCORD_WEBHOOK` | `build-image.yml`, `promote-stable.yml`, `notify-discord.yml` | Discord webhook URL for build/promotion status notifications _(optional — steps no-op if unset)_ |
 
 ---
 

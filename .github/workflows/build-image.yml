@@ -40,6 +40,7 @@ jobs:
 
     permissions:
       contents: read
+      id-token: write
 
     env:
       SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
@@ -52,6 +53,15 @@ jobs:
       R2_BUCKET:            ${{ secrets.R2_BUCKET }}
 
     steps:
+      - name: Notify Discord — Build Started
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK" ] && exit 0
+          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" --arg sha "${{ github.sha }}" '{content: ("🏗️ **ShaniOS Image Build Started**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`\nSHA: `" + $sha + "`")}')
+          curl -s -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d "$MSG" || true
+
       - name: Free disk space
         run: |
           sudo rm -rf \
@@ -84,11 +94,6 @@ jobs:
             > shani-install-media/keys/mok/MOK.der
 
       - name: Export GPG public key
-        # The public key must be present on the host at keys/gpg/gpg-public.asc
-        # before run_in_container.sh mounts the directory, so the build scripts
-        # can copy it into the image/ISO at build time.
-        # An isolated GNUPGHOME is used so the import does not touch the runner's
-        # system keyring and is discarded automatically when the step exits.
         run: |
           mkdir -p shani-install-media/keys/gpg
           TMPGNUPG="$(mktemp -d)"
@@ -100,10 +105,6 @@ jobs:
               --export "$GPG_KEY_ID" \
               > shani-install-media/keys/gpg/gpg-public.asc
           rm -rf "$TMPGNUPG"
-
-      # run_in_container.sh handles: docker pull, SSH setup, GPG import,
-      # and rclone config — all inside the shani-builder container.
-      # build.sh dispatches to the correct sub-scripts based on the command.
 
       - name: Build and upload — ${{ matrix.profile }}
         if: ${{ github.event_name == 'schedule' || github.event.inputs.build_mode != 'full' }}
@@ -118,3 +119,29 @@ jobs:
       - name: Verify uploaded artifact — ${{ matrix.profile }}
         working-directory: shani-install-media
         run: sudo --preserve-env bash run_in_container.sh build.sh verify -p "${{ matrix.profile }}"
+
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shani-image-${{ matrix.profile }}-${{ github.sha }}
+          path: shani-install-media/cache/output/
+          retention-days: 7
+
+      - name: Notify Discord — Build Failed
+        if: failure() && github.event_name == 'workflow_dispatch'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK" ] && exit 0
+          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" '{content: ("❌ **ShaniOS Image Build Failed**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`\n[View logs](" + $run_url + ")")}')
+          curl -s -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d "$MSG" || true
+
+      - name: Notify Discord — Build Succeeded
+        if: success() && github.event_name == 'workflow_dispatch'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK" ] && exit 0
+          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" --arg sha "${{ github.sha }}" '{content: ("✅ **ShaniOS Image Build Complete**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`\nSHA: `" + $sha + "`")}')
+          curl -s -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d "$MSG" || true

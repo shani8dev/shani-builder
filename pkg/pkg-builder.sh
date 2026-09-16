@@ -17,6 +17,9 @@ readonly PKGBUILD_REPO_URL="git@github.com:shani8dev/shani-pkgbuilds.git"
 readonly PUBLIC_REPO_URL="git@github.com:shani8dev/shani-repo.git"
 readonly BUILDER_IMAGE="shrinivasvkumbhar/shani-builder:latest"
 
+# Branch/channel support - defaults to stable
+readonly BRANCH="${BRANCH:-stable}"
+
 # Credentials — read exclusively from environment variables.
 readonly SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY:-}"
 readonly GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
@@ -27,7 +30,36 @@ readonly GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY:-}"
 # value into docker's argv, where `ps aux` / `/proc/<pid>/cmdline` could see it.
 export GPG_PASSPHRASE
 
-# Temp files live in /tmp — never inside any repo directory.
+# ---------------------------------------------------------------------------
+# Environment sanitization - prevent host environment leaks
+# ---------------------------------------------------------------------------
+# Unset variables that can cause issues in container builds
+unset XDG_RUNTIME_DIR 2>/dev/null || true
+export HOME="${HOME:-/root}"
+
+# Per-package cache directory to prevent parallel build collisions
+PKG_CACHE_DIR="${BUILD_DIR:-/tmp}/pkg-cache"
+mkdir -p "${PKG_CACHE_DIR}"
+
+# ---------------------------------------------------------------------------
+# Safety guard - prevent accidental host modifications
+# ---------------------------------------------------------------------------
+# warn()/die() are needed here, before the shared log()/cleanup() block
+# further down - defined inline so this guard doesn't depend on definition
+# order. Under `set -euo pipefail`, calling an undefined function name is a
+# command-not-found failure that aborts the whole script immediately.
+warn() { echo "WARNING: $*" >&2; }
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+if [[ "${IS_IN_CONTAINER:-false}" != "true" ]]; then
+    if [[ "$(id -u)" -eq 0 ]]; then
+        warn "Running as root outside container - ensure this is intentional"
+        if [[ -t 0 ]]; then
+            read -rp "Continue as root? [y/N] " confirm
+            [[ "$confirm" =~ ^[Yy]$ ]] || die "Aborted by user"
+        fi
+    fi
+fi
 # Declare and assign separately so mktemp failures are not masked by readonly.
 SSH_DIR="$(mktemp -d /tmp/shani-ssh-XXXXXX)"
 readonly SSH_DIR
@@ -253,6 +285,20 @@ cleanup_old_versions() {
 # GPG sign uses a binary detached sig — NO --armor.
 # pacman and repo-add both reject ASCII-armored .sig files.
 # ---------------------------------------------------------------------------
+
+# Hashes every tracked file under a package directory (excluding pkg/ and
+# src/ — makepkg's own build-output/work dirs, present after a build but not
+# before one; excluding them keeps the "before" and "after" hash comparable).
+# Used to detect whether a package's inputs changed, not just PKGBUILD's own
+# text — several packages here embed their installed files directly instead
+# of fetching a source=() ref, so PKGBUILD alone can be unchanged while the
+# actual content that would be packaged has.
+_pkg_dir_hash() {
+    local dir="$1"
+    find "${dir}" -type f \( -path '*/pkg/*' -o -path '*/src/*' \) -prune -o -type f -print 2>/dev/null \
+        | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
+}
+
 build_package() {
     local pkgbuild_dir="$1"
     local pkgbuild_dir_clean="${pkgbuild_dir%/}"
@@ -277,8 +323,27 @@ build_package() {
 
     # Skip if both package and signature already exist in the repo.
     if [[ -f "${ARCH_DIR}/${pkg_file}" && -f "${ARCH_DIR}/${pkg_sig}" ]]; then
-        log "Package ${pkg_file} already exists — skipping build."
-        return 0
+        log "Package ${pkg_file} already exists — checking if package sources changed..."
+        # Hash the WHOLE package directory, not just PKGBUILD: ~1/3 of the
+        # packages here (e.g. shani-circle-to-search, shani-chronoa) embed
+        # their installed files directly under the package dir instead of
+        # fetching a source=() tarball/VCS ref — hashing only PKGBUILD would
+        # let an edit to one of those embedded files go undetected and skip
+        # a rebuild it actually needs, silently keeping a stale package
+        # published, unless the maintainer remembers to also bump pkgrel.
+        local pkgbuild_hash
+        pkgbuild_hash="$(_pkg_dir_hash "${pkgbuild_dir}")"
+        local cache_hash_file="${PKG_CACHE_DIR}/${pkgname}.hash"
+        local cached_hash=""
+        if [[ -f "$cache_hash_file" ]]; then
+            cached_hash=$(cat "$cache_hash_file")
+        fi
+        if [[ "$pkgbuild_hash" == "$cached_hash" ]]; then
+            log "Package sources unchanged (hash: ${pkgbuild_hash:0:12}...), skipping build."
+            PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pkg_file}")
+            return 0
+        fi
+        log "Package sources changed — rebuilding..."
     fi
 
     log "Building: ${pkgname} ${pkgver}-${pkgrel}"
@@ -377,6 +442,11 @@ echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd
             log "Warning: expected artifact not found: ${pkgbuild_dir_clean}/${artifact}"
         fi
     done
+
+    # Save package-dir hash for change detection on subsequent builds
+    if [[ "$built" == "true" ]]; then
+        _pkg_dir_hash "${pkgbuild_dir}" > "${PKG_CACHE_DIR}/${pkgname}.hash" || true
+    fi
 
     # Clean up makepkg work directories.
     rm -rf "${pkgbuild_dir_clean}/pkg" "${pkgbuild_dir_clean}/src"
@@ -496,6 +566,14 @@ clone_or_update_repo "${PUBLIC_REPO_URL}" "shani-repo"
 
 mkdir -p "${ARCH_DIR}"
 
+# Preflight cleanup: release any residual mounts from interrupted builds
+for mnt in "${BUILD_DIR:-/tmp}"/shanios-base  "${BUILD_DIR:-/tmp}"/shanios-target; do
+    if mountpoint -q "$mnt" 2>/dev/null; then
+        warn "Residual mount detected at ${mnt}, cleaning up"
+        umount -R "$mnt" 2>/dev/null || warn "Failed to unmount ${mnt}"
+    fi
+done
+
 cleanup_old_versions "${ARCH_DIR}"
 
 PACKAGES_NEEDING_DB_UPDATE=()
@@ -533,3 +611,25 @@ if [[ ${#FAILED_PACKAGES[@]} -gt 0 ]]; then
 fi
 
 log "Build process completed successfully."
+
+# ── Generate manifest/checksums for verification ──────────────────
+# Generates SHA256SUMS for all built packages (similar to ISO-main)
+log "Generating package manifest..."
+
+MANIFEST_DIR="${ARCH_DIR}"
+if [[ -d "${MANIFEST_DIR}" ]]; then
+    pushd "${MANIFEST_DIR}" > /dev/null
+    # Generate SHA256SUMS for all packages and signatures
+    sha256sum *.pkg.tar.zst *.pkg.tar.zst.sig *.db.tar.gz *.files.tar.gz 2>/dev/null > SHA256SUMS || true
+    # Generate manifest.json with metadata
+    cat > manifest.json << MANIFEST_EOF
+{
+  "branch": "${BRANCH}",
+  "generated": "$(date -Iseconds)",
+  "package_count": $(find . -maxdepth 1 -name '*.pkg.tar.zst' -type f 2>/dev/null | wc -l),
+  "checksums": "SHA256SUMS"
+}
+MANIFEST_EOF
+    popd > /dev/null
+    log "Manifest generated at ${MANIFEST_DIR}/manifest.json"
+fi

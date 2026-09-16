@@ -1,0 +1,30 @@
+name: Notify Discord — ShaniOS Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Notification message'
+        required: false
+        default: 'Build notification'
+      status:
+        description: 'Status (started, failed, success)'
+        required: false
+        default: 'started'
+        type: choice
+        options: [started, failed, success]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          INPUT_MESSAGE: ${{ github.event.inputs.message }}
+          INPUT_STATUS: ${{ github.event.inputs.status }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK" ] && exit 0
+          STATUS_EMOJI=$([ "$INPUT_STATUS" = "success" ] && echo "✅" || ([ "$INPUT_STATUS" = "failed" ] && echo "❌" || echo "🏗️"))
+          MSG=$(jq -n --arg status "$INPUT_STATUS" --arg msg "$INPUT_MESSAGE" --arg emoji "$STATUS_EMOJI" '{content: ($emoji + " **ShaniOS Image " + $status + "**\n" + $msg)}')
+          curl -s -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d "$MSG" || true

@@ -4,12 +4,30 @@ name: AI CI Failure Fixer
 # logs to mini-swe-agent (https://mini-swe-agent.com), which diagnoses the
 # root cause and proposes a fix as a PR — it never pushes to main directly.
 #
-# Model: openai/codestral-latest via LLM7's free, no-API-key gateway
-# (https://api.llm7.io/v1) — verified working end-to-end (real tool calls,
-# real task completion) with zero cost and no key to provision. If LLM7
-# ever becomes unavailable, BlockRun (https://blockrun.ai/api/v1, also
-# no-key) is a verified-working alternative — same env var shape below,
-# just swap MODEL/API_BASE.
+# Model: openai/cohere/north-mini-code via BlockRun's free, no-API-key
+# gateway (https://blockrun.ai/api/v1) — zero cost, no key to provision.
+# This specific combination was chosen after testing several free options
+# on a realistic multi-step diagnose-and-fix task (a synthetic PKGBUILD
+# with an unresolvable dependency, mirroring the actual broadcom-wl
+# incident), not just a single-tool-call smoke test:
+#   - openai/codestral-latest and openai/default via LLM7
+#     (https://api.llm7.io/v1): pass a trivial one-shot tool call, but
+#     LLM7's gateway breaks with "BadRequestError: Upstream provider
+#     could not process the request" as soon as a tool-result message
+#     enters the conversation (i.e. on the second turn) - reproduced with
+#     two different models, so it's a gateway-wide issue, not a model one.
+#   - openai/nvidia/gpt-oss-20b and openai/nvidia/nemotron-3-ultra-550b
+#     via BlockRun: reliably fail to produce a tool call at all under
+#     mini-swe-agent's actual (large) system prompt and give up
+#     immediately.
+#   - openai/cohere/north-mini-code via BlockRun: the only one of five
+#     tested that completed the full loop for real - investigated the
+#     repo (ls/cat/grep), correctly identified the exact offending
+#     dependency line, applied a minimal `sed -i` fix, re-read the file to
+#     confirm, then finished cleanly.
+# If this model/gateway ever stops working, re-verify a replacement the
+# same way before swapping it in - a passing single tool-call test is not
+# sufficient evidence, per the above.
 #
 # Required repo secret (not provisioned by this workflow — must be added
 # manually in shani8dev/shani-builder's repo settings before this can run):
@@ -155,11 +173,11 @@ jobs:
 
       - name: Run the agent
         env:
-          # LLM7's free gateway needs no real key; litellm's OpenAI client
-          # still requires *a* value to be set.
+          # BlockRun's free gateway needs no real key; litellm's OpenAI
+          # client still requires *a* value to be set.
           OPENAI_API_KEY: unused
-          OPENAI_API_BASE: https://api.llm7.io/v1
-          OPENAI_BASE_URL: https://api.llm7.io/v1
+          OPENAI_API_BASE: https://blockrun.ai/api/v1
+          OPENAI_BASE_URL: https://blockrun.ai/api/v1
           # Skips mini's interactive first-run setup wizard (it aborts
           # without a TTY) and litellm's cost lookup, which doesn't have
           # pricing data for a custom-routed free model.
@@ -168,7 +186,7 @@ jobs:
         working-directory: work
         run: |
           mini -y --exit-immediately \
-            -m openai/codestral-latest \
+            -m openai/cohere/north-mini-code \
             --cost-limit 0 \
             -t "$(cat task.md)" \
             -o trajectory.json

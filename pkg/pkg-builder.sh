@@ -420,7 +420,7 @@ for key in \$PGP_KEYS; do gpg --batch --keyserver keyserver.ubuntu.com --recv-ke
 
 cd /pkg/$q_dir || { echo '"'"'cd failed'"'"'; exit 1; }
 
-makepkg -sc --noconfirm || { echo '"'"'makepkg failed'"'"'; exit 1; }
+timeout "\${BUILD_TIMEOUT:-3600}" makepkg -sc --noconfirm || { rc=\$?; if [ "\$rc" -eq 124 ]; then echo \"makepkg timed out after \${BUILD_TIMEOUT:-3600}s (set BUILD_TIMEOUT)\" >&2; else echo \"makepkg failed (exit \$rc)\" >&2; fi; exit 1; }
 
 # Sign — binary detached sig, NO --armor (pacman rejects ASCII sigs).
 echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output ${q_file}.sig $q_file || { echo '"'"'GPG sign failed'"'"'; exit 1; }"

@@ -1,4 +1,4 @@
-name: Notify Discord — ShaniOS Image
+name: Notify Discord
 
 on:
   workflow_dispatch:
@@ -9,22 +9,21 @@ on:
         default: 'Build notification'
       status:
         description: 'Status (started, failed, success)'
-        required: false
-        default: 'started'
+        required: true
         type: choice
         options: [started, failed, success]
+      repo-name:
+        description: 'Display name of the repo'
+        required: true
+        type: string
+        default: 'ShaniOS Builder'
 
 jobs:
   notify:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Notify Discord
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          INPUT_MESSAGE: ${{ github.event.inputs.message }}
-          INPUT_STATUS: ${{ github.event.inputs.status }}
-        run: |
-          [ -z "$DISCORD_WEBHOOK" ] && exit 0
-          STATUS_EMOJI=$([ "$INPUT_STATUS" = "success" ] && echo "✅" || ([ "$INPUT_STATUS" = "failed" ] && echo "❌" || echo "🏗️"))
-          MSG=$(jq -n --arg status "$INPUT_STATUS" --arg msg "$INPUT_MESSAGE" --arg emoji "$STATUS_EMOJI" '{content: ($emoji + " **ShaniOS Image " + $status + "**\n" + $msg)}')
-          curl -s -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d "$MSG" || true
+    uses: shani8dev/shani-ci-commons/.github/workflows/notify-discord.yml@main
+    with:
+      message: ${{ inputs.message }}
+      status: ${{ inputs.status }}
+      repo-name: ${{ inputs.repo-name }}
+    secrets:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}

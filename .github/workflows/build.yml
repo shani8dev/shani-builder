@@ -1,0 +1,16 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/**'
+      - 'pkg/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: shani8dev/shani-ci-commons/.github/workflows/build.yml@main
+    with:
+      build-type: docker

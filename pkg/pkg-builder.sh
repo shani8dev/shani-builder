@@ -41,6 +41,9 @@ export HOME="${HOME:-/root}"
 PKG_CACHE_DIR="${BUILD_DIR:-/tmp}/pkg-cache"
 mkdir -p "${PKG_CACHE_DIR}"
 
+# Path to this repo's pkg/ directory — used to locate build-metrics.sh
+PKG_BUILDER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 # ---------------------------------------------------------------------------
 # Safety guard - prevent accidental host modifications
 # ---------------------------------------------------------------------------
@@ -105,6 +108,18 @@ trap cleanup EXIT
 # Logging
 # ---------------------------------------------------------------------------
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $*"; }
+
+# ---------------------------------------------------------------------------
+# _record_build_metric — write one row to the metrics DB via build-metrics.sh
+# ---------------------------------------------------------------------------
+_record_build_metric() {
+    local pkgbase="$1" status="$2" start_time="$3" end_time="$4" error="${5:-}"
+    local commit_sha="${6:-}"
+    if [[ -x "$(command -v python3)" ]]; then
+        "${PKG_BUILDER_DIR}/build-metrics.sh" record "$pkgbase" "$status" \
+            "$start_time" "$end_time" "$error" "$commit_sha" 2>/dev/null || true
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Validate required environment variables
@@ -340,6 +355,7 @@ build_package() {
         fi
         if [[ "$pkgbuild_hash" == "$cached_hash" ]]; then
             log "Package sources unchanged (hash: ${pkgbuild_hash:0:12}...), skipping build."
+            _record_build_metric "$pkgname" "alreadyBuilt" "$(date +%s.%N)" "$(date +%s.%N)" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
             PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pkg_file}")
             return 0
         fi
@@ -376,6 +392,7 @@ build_package() {
     # each value so a PKGBUILD directory name or package filename containing
     # a quote or shell metacharacter can't break out and run arbitrary code
     # with access to the imported GPG signing key.
+    BUILD_START_TIME="$(date +%s.%N)"
     docker run --rm \
         -v "$(pwd):/pkg" \
         -v "${pkg_gpg_key_file}:/home/builduser/.gnupg/temp-private.asc" \
@@ -430,7 +447,17 @@ echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd
             # environment into builduser'"'"'s shell without ever placing the
             # secret value in an argv visible to ps/procfs.
             su --preserve-environment builduser -c "$inner"
-        '
+        ' || {
+        BUILD_RC=$?
+        BUILD_END_TIME="$(date +%s.%N)"
+        if [[ "$BUILD_RC" -eq 124 ]]; then
+            _record_build_metric "$pkgname" "timeout" "$BUILD_START_TIME" "$BUILD_END_TIME" "makepkg timed out after ${BUILD_TIMEOUT:-3600}s" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
+        else
+            _record_build_metric "$pkgname" "failed" "$BUILD_START_TIME" "$BUILD_END_TIME" "makepkg failed (exit $BUILD_RC)" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
+        fi
+        return 1
+    }
+    BUILD_END_TIME="$(date +%s.%N)"
 
     # Move built artifacts into the public repo directory.
     local built=false
@@ -442,6 +469,11 @@ echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd
             log "Warning: expected artifact not found: ${pkgbuild_dir_clean}/${artifact}"
         fi
     done
+
+    # Post-build verification: compare against previous version.
+    if [[ "$built" == "true" ]]; then
+        _run_checkpkg "${pkgbuild_dir_clean}" "${pkg_file}"
+    fi
 
     # Save package-dir hash for change detection on subsequent builds
     if [[ "$built" == "true" ]]; then
@@ -457,7 +489,29 @@ echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd
     fi
 
     PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pkg_file}")
+    _record_build_metric "$pkgname" "success" "$BUILD_START_TIME" "$BUILD_END_TIME" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# Post-build verification: compare built package against previous version.
+# Runs checkpkg.sh inside the builder container (needs bsdtar, find-libprovides).
+# Reports file-list and soname differences — does not halt the build.
+# ---------------------------------------------------------------------------
+_run_checkpkg() {
+    local pkgbuild_dir="$1"
+    local pkg_file="$2"
+
+    log "Running checkpkg on ${pkg_file}..."
+
+    docker run --rm \
+        -v "$(pwd):/pkg" \
+        -e PKGBUILD_DIR="${pkgbuild_dir}" \
+        -e PKG_FILE="${pkg_file}" \
+        -e IS_IN_CONTAINER=true \
+        "${BUILDER_IMAGE}" bash /pkg/pkg/checkpkg.sh \
+        && log "checkpkg passed for ${pkg_file}" \
+        || warn "checkpkg found differences or failed for ${pkg_file} — review output above."
 }
 
 # ---------------------------------------------------------------------------

@@ -145,9 +145,11 @@ section is deliberately just the current-state summary.
   validates exact arguments — a real architecture decision, not a code
   patch. See `AUDIT-HISTORY.md` for the full live-verification detail.
 - **iptables-nft.** `docker/Dockerfile:22` installs `iptables-nft`.
-- **CI status.** 4 CI workflows: `build-docker.yaml`, `build.yaml`,
+- **CI status.** 6 workflow files: 4 build/publish — `build-docker.yaml`, `build.yaml`,
   `build-image.yml`, `promote-stable.yml` with concurrency groups and
-  timeouts (60/120/360/15 min). `build.yaml` also has `workflow_dispatch`
+  timeouts (60/120/360/15 min) — plus 2 auxiliary helpers: `ai-ci-fixer.yml`
+  (auto-retry on failed builds) and `notify-discord.yml` (manual-dispatch
+  notification). `build.yaml` also has `workflow_dispatch`
   now, so it can be triggered on demand (`gh workflow run "Build and
   Package"`), not just via the daily cron or a path-filtered push.
 - **Shared temp GPG key file across sequential `docker run` calls — FIXED
@@ -188,3 +190,80 @@ happened to be testing against.
 like it matches), that's the regression to fix, not the documentation.
 `AUDIT-HISTORY.md` has the full narrative behind every entry in
 "Audit-verified known issues" above.
+
+## Garuda Cross-Reference Findings (added 2026-09-17)
+
+Based on a full scan of 29 garuda-linux repos (see `../garuda-catalog.md`) mapped against shani (see `../shani-catalog.md`). Chaotic Manager (garuda) is the most directly comparable repo — both manage package building.
+
+### 🟡 HIGH: Build pipeline gaps vs Chaotic Manager
+
+Chaotic Manager has build orchestration features shani-builder lacks:
+
+1. **Add build timeout wrapper** (estimated 2 hours).
+   - Wrap `makepkg` calls with `timeout "${BUILD_TIMEOUT:-3600}"` to prevent hung builds from running indefinitely.
+   - Chaotic Manager's builder has an `idle_timeout` watchdog that kills builds that become idle too long.
+   - **Where**: `pkg/pkg-builder.sh` where makepkg is invoked.
+
+2. **Add build metrics & observability** (estimated 1-2 days).
+   - Chaotic Manager's `metrics.service.ts` tracks 15+ metrics: builds total/success/failed, build times (histogram), active/idle builders, queue depth.
+   - Shani-builder has no build metrics, no build time tracking, no queue monitoring.
+   - **Where**: New file `pkg/metrics.sh` or SQLite DB. Even simple tracking of builds attempted/succeeded/failed/times is an improvement.
+
+3. **Add dependency-aware job scheduling** (estimated 1-2 days, future enhancement).
+   - Chaotic Manager's coordinator uses a dependency graph (`constructDependencyGraph()`) to schedule packages after their dependencies, matches `build_class` to node capability, and auto-requeues on node disconnect.
+   - Shani-builder processes sequentially or via CI triggers — no dependency graph.
+   - **Where**: `pkg/pkg-builder.sh` or a new queue manager. Even a file-based queue (`/var/spool/shani-builder/queue.json`) with dependency checking would help.
+
+4. **Activity watchdog for builds** (estimated 1 day).
+   - Chaotic Manager collects container CPU/memory stats during builds and cancels builds that are idle too long. Stats are attached to build results for post-analysis.
+   - **Where**: Around `makepkg` calls in `pkg-builder.sh`.
+
+### 🟢 MEDIUM: CI/CD gap
+
+5. **Shared CI templates** (estimated 2-3 days, affects ALL repos).
+   - Garuda's `gitlab-ci-commons` provides reusable templates (commitizen, flake-check, pre-commit, tag-to-release). Each garuda repo `include:`s from it.
+   - Shani repos run on GitHub Actions (no `.gitlab-ci.yml` anywhere) — 8 repos (blog, builder, docs, fleet, insights, install-media, pkgbuilds, platform) carry hand-written `.github/workflows/*.yml` with duplicated patterns.
+   - **Action**: Create `shani-ci-commons` (GitHub Actions reusable workflows / composite actions) with templates for lint, test, build, security scan. Each repo references them via `uses: shani8dev/shani-ci-commons/...` instead of copy-pasting.
+   - **Affects**: All 15 shani repos.
+
+### ✅ What shani-builder already does better than Chaotic Manager
+
+- Direct package signing and publishing to shani-repo (simpler than Chaotic Manager's SFTP upload pipeline)
+- Real test harness via shani-install-media/test-env
+- Security-conscious secret handling documentation (argv leak vectors documented)
+
+### 🔍 Re-Scan Findings (2026-09-17)
+
+Re-scanned against `../garuda-catalog.md` (29 actual garuda repos — garuda-builder, garuda-repo, garuda-pkgbuilds and others from the original 34-repo mapping do NOT exist).
+
+**Confirmed mapping**: **chaotic-manager** (`garuda-clones/chaotic-manager/`) remains the primary counterpart — both manage package building — and the reference above is valid. Two additional actual repos are directly comparable: **chaotic-portable-builder** (`garuda-clones/chaotic-portable-builder/` — local/test builder using podman + Nix dev shell) and **buildiso-docker** (`garuda-clones/buildiso-docker/` — Docker image for building ISOs, mirrors shani-builder's `docker/` role).
+
+**New gaps discovered** (chaotic-manager/buildiso-docker features shani-builder lacks):
+1. **No Telegram/chat notifications** — chaotic-manager ships `telegram-bot.ts`; shani-builder has no build-result notification channel.
+2. **No Redis-backed queue** — chaotic-manager uses BullMQ/Redis (`redis-connection-manager.ts`); shani-builder builds sequentially with no queue primitive.
+3. **No automated PKGBUILD update checks** — chaotic-manager's CI runs half-hourly tag checks and auto-updates PKGBUILDs from AUR/GitLab; shani-builder has no source-drift detection.
+4. **No Nix dev shell** — chaotic-portable-builder uses `shell.nix`/`nix develop` for a reproducible dev environment; shani-builder is Docker-only.
+5. **No web UI/API** — chaotic-manager exposes an Express API on port 8080 with xterm terminal; shani-builder has no management interface.
+
+**Shani advantages**:
+1. **Direct package signing + publishing** — `pkg/pkg-builder.sh` signs every package and the database (`repo-add -s`) and pushes straight to `shani-repo`; simpler than chaotic-manager's SFTP upload pipeline.
+2. **`validpgpkeys` pre-import** — builder imports each PKGBUILD's declared keys before `makepkg`; chaotic-manager doesn't document this.
+3. **Per-call `mktemp` secret files** — every `build_package()` call gets a fresh temp file, shredded via `RETURN` trap; documented argv-leak verification methodology (see `AUDIT-HISTORY.md`).
+
+### 📋 Implementation Roadmap (2026-09-17)
+
+Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap for the whole shani ecosystem).
+
+~~1. **Build Timeout Wrapper** (P0, ~2 hours) — Wrap `makepkg` calls with `timeout "${BUILD_TIMEOUT:-3600}"` in `pkg/pkg-builder.sh` to prevent hung builds from running indefinitely.~~ **DONE — closed 2026-09-17.** Installed `timeout "${BUILD_TIMEOUT:-3600}" makepkg -sc --noconfirm` at the single makepkg site in `pkg/pkg-builder.sh`, with exit-code-aware logging (`makepkg timed out after … (set BUILD_TIMEOUT)` on timeout exit 124; `makepkg failed (exit N)` otherwise) and `exit 1` to halt the build. GPG/SSH secret-handling paths (passphrase-via-stdin `--passphrase-fd 0`, `--detach-sign`) left byte-intact. Verified: `bash -n` clean; `bash tests/test-build-timeout.sh` 5/5 green (hung stub makepkg killed at 2s→exit 124 + timed-out log); source diff touches only the makepkg line. Chaotic Manager's `idle_timeout` watchdog parity confirmed.
+
+2. **Activity Watchdog** (P1, ~1 day) — Kill builds that produce no stdout/stderr output for a configurable number of seconds, combining with the timeout wrapper above. Chaotic Manager collects container CPU/memory stats and cancels idle builds; a simpler `timeout`-based activity check on the makepkg output achieves the same practical result without Redis or a metrics backend. Source: IMPLEMENTATION-ROADMAP.md #4.
+
+3. **Build Metrics & Observability** (P1, ~1-2 days) — Create `pkg/build-metrics.sh` writing to a SQLite database: `(pkgbase, status, start_time, end_time, error, commit_sha)`. Chaotic Manager's `metrics.service.ts` tracks 15+ metrics; even basic build-time/success/failure tracking answers "which package fails most" and "average build time" — questions currently unanswerable. Source: IMPLEMENTATION-ROADMAP.md #10.
+
+4. **checkpkg Equivalent** (P1, ~1 day) — Create `pkg/checkpkg.sh` to verify a package build produces a working artifact before publishing to `shani-repo`. Builds a temp copy, downloads the previous version from the repo, compares file lists and sonames (`bsdtar tf` + `sdiff`). Adapts `garuda-tools/bin/checkpkg.in`'s pattern to shani's `pkg-builder.sh` pipeline. Source: IMPLEMENTATION-ROADMAP.md #11.
+
+5. **Dependency-Aware Job Scheduling** (P2, ~1-2 weeks) — File-based queue at `/var/spool/shani-builder/queue.json` with a dependency graph parsed from PKGBUILD `depends=/makedepends=`. Captures ~30% of chaotic-manager's orchestration value at ~5% of the effort, using bash + jq only — no Redis, no TypeScript, no event bus. Source: IMPLEMENTATION-ROADMAP.md #14.
+
+6. **Shared CI Templates, Renovate, Conventional Commits** (P1, cross-repo) — Create `shani-ci-commons` with reusable GitHub Actions workflow templates (lint, test, build, security scan). Add fleet-wide Renovate for automated dependency updates and commitizen for conventional commit enforcement. These affect all 15 shani repos; this repo's CI workflows (`build-docker.yaml`, `build.yaml`, `build-image.yml`, `promote-stable.yml`) would be the first consumers. Source: IMPLEMENTATION-ROADMAP.md #7, #8, #9.
+
+7. **Docker Environment Secrets — ✅ AUDIT-VERIFIED CLEAN (2026-09-17)** (master-roadmap #5, VERIFY). The pkg-builder Dockerfile was audited: `ENV` exposes only `BUILD_USER` + `GNUPGHOME`; the signing passphrase is passed via `-e` at `docker run` time and never baked into the image — no env-var→argv leak path found. **Keep** the `-e`-at-runtime pattern. Remaining optional follow-up from master #5: a CI grep step scoped to `pkg-builder.sh`/`upload.sh` argv construction to prevent regression.

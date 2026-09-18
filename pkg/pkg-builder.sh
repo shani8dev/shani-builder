@@ -241,9 +241,13 @@ cleanup_old_versions() {
         # than interpolating it into the script string.
         entry=$(bash -c '
             source "$1/PKGBUILD"
+            ver="${pkgver}"
+            if [[ -n "${epoch:-0}" && "${epoch:-0}" != "0" ]]; then
+                ver="${epoch}:${pkgver}"
+            fi
             for pn in "${pkgname[@]}"; do
                 for pa in "${arch[@]}"; do
-                    echo "${pn}-${pkgver}-${pkgrel}-${pa}"
+                    echo "${pn}-${ver}-${pkgrel}-${pa}"
                 done
             done
         ' _ "${pkgbuild_dir}")
@@ -323,17 +327,40 @@ build_package() {
     # pkgbuild_dir is passed as a positional argument ($1), not interpolated
     # into the script string, so a directory name containing a quote can't
     # break out and inject commands that then get eval'd below.
-    local pkgname pkgver pkgrel pkg_arch pgp_keys
+    local pkgname pkgver pkgrel epoch arch_list pgp_keys
     eval "$(bash -c '
         source "$1/PKGBUILD"
         echo "pkgname=${pkgname[0]:-${pkgname}}"
         echo "pkgver=${pkgver}"
         echo "pkgrel=${pkgrel}"
-        echo "pkg_arch=${arch[0]:-${arch}}"
+        echo "epoch=${epoch:-0}"
+        echo "arch_list=(${arch[*]})"
         echo "pgp_keys=${validpgpkeys[*]:-}"
     ' _ "${pkgbuild_dir}")"
 
-    local pkg_file="${pkgname}-${pkgver}-${pkgrel}-${pkg_arch}.pkg.tar.zst"
+    # makepkg builds only for the host CARCH — never arch[0] (brscan4's
+    # arch=('i686' 'x86_64') would otherwise look for a -i686 artifact an
+    # x86_64 host never produces). Mirrors makepkg's get_pkg_arch:
+    local host_carch pkg_arch
+    host_carch="$(uname -m)"
+    [[ "$host_carch" == "armv7l" ]] && host_carch="armv7h"
+    if [[ " ${arch_list[*]} " == *" ${host_carch} "* ]]; then
+        pkg_arch="$host_carch"
+    elif [[ " ${arch_list[*]} " == *" any "* ]]; then
+        pkg_arch="any"
+    else
+        pkg_arch="${arch_list[0]}"
+    fi
+
+    # makepkg (pacman >= 6.1) puts a non-zero epoch in the FILENAME too
+    # (gsconnect-2:72-2-any...), not just .PKGINFO — omitting it made the
+    # sign step look for a nonexistent file and threw away a good build.
+    local ver="${pkgver}"
+    if [[ -n "$epoch" && "$epoch" != "0" ]]; then
+        ver="${epoch}:${pkgver}"
+    fi
+
+    local pkg_file="${pkgname}-${ver}-${pkgrel}-${pkg_arch}.pkg.tar.zst"
     local pkg_sig="${pkg_file}.sig"
 
     # Skip if both package and signature already exist in the repo.
@@ -362,7 +389,7 @@ build_package() {
         log "Package sources changed — rebuilding..."
     fi
 
-    log "Building: ${pkgname} ${pkgver}-${pkgrel}"
+    log "Building: ${pkgname} ${ver}-${pkgrel}"
 
     # A FRESH key file per call, not the old shared GPG_KEY_FILE — found
     # live that reusing one file bind-mounted into many sequential docker

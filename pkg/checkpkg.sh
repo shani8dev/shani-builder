@@ -54,6 +54,13 @@ fi
 PKGDIR="${PKGBUILD_DIR:?PKGBUILD_DIR not set}"
 PKGFILE="${PKG_FILE:?PKG_FILE not set}"
 
+# Inside the container the repo root is mounted at /pkg, but PKGBUILD_DIR may
+# arrive as a repo-relative path (shani-pkgbuilds/X) — resolve it against /pkg
+# so the `cd "$PKGDIR"` below cannot fail on the image's WORKDIR.
+if [[ "${IS_IN_CONTAINER:-false}" == "true" && "$PKGDIR" != /pkg/* ]]; then
+    PKGDIR="/pkg/${PKGDIR}"
+fi
+
 cd "$PKGDIR"
 
 # Source PKGBUILD to get metadata (same approach as pkg-builder.sh).

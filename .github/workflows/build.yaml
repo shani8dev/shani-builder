@@ -45,9 +45,26 @@ jobs:
         # Pattern uses a backreference so it only flags the self-referential
         # leak shape `-e VAR="$VAR"` — legitimately different env names
         # (`-e PKGBUILD_DIR="${pkgbuild_dir_clean}"`) stay green.
+        #
+        # IMPORTANT (verified live, 2026-09-18): the backreference-pattern
+        # grep must read directly from the real files, NOT from a pipe.
+        # `grep -vE '^#' pkg/*.sh | grep -nE "$PAT"` (piping INTO the
+        # backreference grep) false-positived on
+        # `SHANI_GH_REPO="$SHANI_GH_REPO" SHANI_GH_TOKEN="$SHANI_GH_TOKEN"`
+        # in mirror_releases() (a safe `VAR=value cmd` env-prefix, not a
+        # `docker -e` argv leak - confirmed via /proc/<pid>/cmdline that this
+        # shape never reaches any process's argv) — reproducibly, 5/5 runs,
+        # with GNU grep 3.11, even though the exact same byte content grepped
+        # from a real file (not a pipe) does NOT match. Piping INTO a
+        # backreference pattern is the trigger; the fix is to run the
+        # backreference grep on real file arguments first, then filter out
+        # comment-only hits as a second, backreference-free stage (which
+        # only ever pipes a mere handful of already-matched lines, avoiding
+        # whatever buffering path caused the false positive on the full
+        # piped file content).
         run: |
           PAT='-e[[:space:]]+([A-Za-z_]+)="\$(\{)?\1(})?"'
-          if grep -vE '^[[:space:]]*#' pkg/*.sh | grep -nE "$PAT"; then
+          if grep -nE -- "$PAT" pkg/*.sh | grep -vE ':[0-9]+:[[:space:]]*#'; then
             echo "::error::Found -e VAR=\"\$VAR\" argv construction in pkg/*.sh — pass a BARE -e VAR with a prior export so the secret never lands in the docker argv (see AGENTS.md)." >&2
             exit 1
           fi
@@ -58,6 +75,10 @@ jobs:
         # matching the exact leak shape it exists to catch (a broken or
         # over-narrowed pattern passes silently), this step fails — proving
         # the guard is not dead code. Comment-only matches must NOT trip it.
+        # Also regression-tests the exact false positive found live above
+        # (a safe VAR=value env-prefix to a non-docker command) so it can
+        # never silently come back if the guard step is ever refactored
+        # back toward piping into the backreference grep.
         run: |
           PAT='-e[[:space:]]+([A-Za-z_]+)="\$(\{)?\1(})?"'
           printf 'docker run --rm -e GPG_PASSPHRASE="$GPG_PASSPHRASE" img\n' | grep -qE "$PAT" \
@@ -66,7 +87,12 @@ jobs:
             || { echo "::error::Guard pattern MISSED a planted continuation-style -e leak" >&2; exit 1; }
           printf '        -e GPG_PASSPHRASE \\\n' | grep -qE "$PAT" \
             && { echo "::error::Guard pattern falsely flags safe bare -e VAR form" >&2; exit 1; }
-          echo "OK: guard pattern traps both planted leak shapes, tolerates bare -e VAR"
+          printf '    SHANI_GH_REPO="$SHANI_GH_REPO" SHANI_GH_TOKEN="$SHANI_GH_TOKEN" \\\n' > /tmp/env_prefix_check.txt
+          if grep -nE -- "$PAT" /tmp/env_prefix_check.txt | grep -vE ':[0-9]+:[[:space:]]*#'; then
+            echo "::error::Guard falsely flags a safe VAR=value env-prefix to a command (mirror_releases() shape) — this exact false positive was found live 2026-09-18 when piping through the backreference grep instead of reading it from a file" >&2
+            exit 1
+          fi
+          echo "OK: guard pattern traps both planted leak shapes, tolerates bare -e VAR and safe env-prefix VAR=value forms"
 
       - name: Pull builder image
         # Pre-pull the build container so the cold-pull latency does not sit

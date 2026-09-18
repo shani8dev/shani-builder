@@ -36,6 +36,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Guard — no secret values in docker -e argv
+        # Regression guard (AGENTS.md: the signing passphrase leaked via
+        # `docker run -e VAR="$VAR"` argv TWICE — once inner su -c, once the
+        # outer docker run itself). Seeds must be passed as bare `-e VAR`
+        # with a prior `export`, never as `-e VAR="$VAR"` which lands the
+        # literal value in the process argv where any local user can read it.
+        # Pattern uses a backreference so it only flags the self-referential
+        # leak shape `-e VAR="$VAR"` — legitimately different env names
+        # (`-e PKGBUILD_DIR="${pkgbuild_dir_clean}"`) stay green.
+        run: |
+          PAT='-e[[:space:]]+([A-Za-z_]+)="\$(\{)?\1(})?"'
+          if grep -vE '^[[:space:]]*#' pkg/*.sh | grep -nE "$PAT"; then
+            echo "::error::Found -e VAR=\"\$VAR\" argv construction in pkg/*.sh — pass a BARE -e VAR with a prior export so the secret never lands in the docker argv (see AGENTS.md)." >&2
+            exit 1
+          fi
+          echo "OK: no -e VAR=\"\$VAR\" argv constructions in pkg/*.sh"
+
+      - name: Guard proof-hit — pattern must trap a real leak
+        # Positive control for the guard above: if the regex ever stops
+        # matching the exact leak shape it exists to catch (a broken or
+        # over-narrowed pattern passes silently), this step fails — proving
+        # the guard is not dead code. Comment-only matches must NOT trip it.
+        run: |
+          PAT='-e[[:space:]]+([A-Za-z_]+)="\$(\{)?\1(})?"'
+          printf 'docker run --rm -e GPG_PASSPHRASE="$GPG_PASSPHRASE" img\n' | grep -qE "$PAT" \
+            || { echo "::error::Guard pattern MISSED a planted one-liner -e leak" >&2; exit 1; }
+          printf '        -e SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY}" \\\n' | grep -qE "$PAT" \
+            || { echo "::error::Guard pattern MISSED a planted continuation-style -e leak" >&2; exit 1; }
+          printf '        -e GPG_PASSPHRASE \\\n' | grep -qE "$PAT" \
+            && { echo "::error::Guard pattern falsely flags safe bare -e VAR form" >&2; exit 1; }
+          echo "OK: guard pattern traps both planted leak shapes, tolerates bare -e VAR"
+
       - name: Pull builder image
         # Pre-pull the build container so the cold-pull latency does not sit
         # silently inside pkg-builder.sh where it is hard to time or retry.

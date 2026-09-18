@@ -14,6 +14,14 @@ images and ISOs; `pkg/` builds, GPG-signs, and publishes packages to
 repo's signing key — secret-handling bugs here are supply-chain bugs, not
 local mistakes.
 
+## Empirical verification (mandatory)
+
+**Reading code is analysis; running code is verification.** A change is not
+verified by reading the diff, running `bash -n`, or confirming it "looks
+correct." It is verified by observing the actual behavior of the real
+thing in the real environment — built, served, deployed, signed, running.
+If you haven't seen it work (or fail) for real, it isn't verified.
+
 ## Rule: "the passphrase isn't in the command string anymore" is not proof it doesn't leak
 
 This repo signs every package and OS image Shanios ships. A secret-handling

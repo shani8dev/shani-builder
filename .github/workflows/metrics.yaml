@@ -25,52 +25,16 @@ jobs:
         # by pkg/build-metrics.sh during pkg-builder.sh runs.
         # This step exports them in Prometheus format for scraping.
         run: |
-          DB_PATH="${HOME}/.local/share/shani-builder/metrics.db"
-          if [[ -f "$DB_PATH" ]]; then
-            python3 - "$DB_PATH" <<'PYEOF'
-import sqlite3, sys
-db = sys.argv[1]
-conn = sqlite3.connect(db)
-cur = conn.cursor()
-cur.execute("SELECT COUNT(*), MIN(start_time), MAX(end_time) FROM builds")
-total, min_t, max_t = cur.fetchone()
-print(f"# shani-builder build metrics summary")
-print(f"# Total builds: {total or 0}")
-if min_t and max_t:
-    print(f"# Time range: {min_t:.0f} to {max_t:.0f}")
-cur.execute("SELECT status, COUNT(*) FROM builds GROUP BY status")
-for status, count in cur.fetchall():
-    print(f"# {status}: {count}")
-cur.execute("SELECT pkgbase, COUNT(*) FROM builds WHERE status='failed' GROUP BY pkgbase ORDER BY COUNT(*) DESC")
-failures = cur.fetchall()
-if failures:
-    print(f"# Top failing packages:")
-    for pkgbase, count in failures:
-        print(f"#   {pkgbase}: {count}")
-conn.close()
-PYEOF
+          if [[ -f "${HOME}/.local/share/shani-builder/metrics.db" ]]; then
+            ./pkg/build-metrics.sh export-prometheus
           else
             echo "No metrics database found yet — run pkg-builder.sh first."
           fi
 
       - name: Query failed builds
         run: |
-          DB_PATH="${HOME}/.local/share/shani-builder/metrics.db"
-          if [[ -f "$DB_PATH" ]]; then
-            python3 - "$DB_PATH" <<'PYEOF'
-import sqlite3, sys
-db = sys.argv[1]
-conn = sqlite3.connect(db)
-cur = conn.cursor()
-cur.execute("SELECT pkgbase, COUNT(*) FROM builds WHERE status='failed' GROUP BY pkgbase ORDER BY COUNT(*) DESC")
-rows = cur.fetchall()
-if rows:
-    for pkgbase, count in rows:
-        print(f"{pkgbase}\t{count}")
-else:
-    print("No failed builds recorded.")
-conn.close()
-PYEOF
+          if [[ -f "${HOME}/.local/share/shani-builder/metrics.db" ]]; then
+            ./pkg/build-metrics.sh query-failures
           else
             echo "No metrics database found."
           fi

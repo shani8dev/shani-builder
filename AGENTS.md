@@ -145,11 +145,15 @@ section is deliberately just the current-state summary.
   validates exact arguments — a real architecture decision, not a code
   patch. See `AUDIT-HISTORY.md` for the full live-verification detail.
 - **iptables-nft.** `docker/Dockerfile:22` installs `iptables-nft`.
-- **CI status.** 6 workflow files: 4 build/publish — `build-docker.yaml`, `build.yaml`,
+- **CI status.** 8 workflow files: 5 build/publish — `build-docker.yaml`, `build.yaml`,
   `build-image.yml`, `promote-stable.yml` with concurrency groups and
-  timeouts (60/120/360/15 min) — plus 2 auxiliary helpers: `ai-ci-fixer.yml`
-  (auto-retry on failed builds) and `notify-telegram.yml` (manual-dispatch
-  notification). `build.yaml` also has `workflow_dispatch`
+  timeouts (60/120/360/15 min), and `build.yml` (docker-image build via
+  `shani-ci-commons` `build.yml`) — plus 3 auxiliary helpers: `ai-ci-fixer.yml`
+  (auto-retry on failed builds), `notify-telegram.yml` (manual-dispatch
+  notification via `shani-ci-commons` `notify-telegram.yml`), and
+  `metrics.yaml` (exports `pkg/build-metrics.sh` Prometheus metrics after
+  the Build and Package run, daily cron, and manual dispatch). `build.yaml`
+  also has `workflow_dispatch`
   now, so it can be triggered on demand (`gh workflow run "Build and
   Package"`), not just via the daily cron or a path-filtered push.
 - **Shared temp GPG key file across sequential `docker run` calls — FIXED

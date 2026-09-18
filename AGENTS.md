@@ -102,6 +102,13 @@ isn't an acceptable trade.
   bind-mounted secret file, give it its own `mktemp` call per use — don't
   hoist it to a shared variable "for efficiency."
 
+## Commit discipline
+
+Before composing a commit message, run `git log --oneline -20` (and `git
+log -5 -- <touched paths>` for the files you changed) and match the
+existing style — subject shape, scope prefixes, body detail level —
+rather than writing in a generic format.
+
 ## Boundaries
 
 - ✅ **Always**: give any new bind-mounted secret file its own fresh
@@ -118,6 +125,7 @@ isn't an acceptable trade.
   anymore" is proof it doesn't leak — verify with the real `ps`/`/proc`
   polling harness above, every time, both the outer container-launch
   command and anything executed inside it.
+- 🚫 **Never**: delete or skip a failing test to make a build/CI pass — fix the underlying code, not the test. A red test is signal; silencing it destroys the signal, not the bug.
 
 ## Audit-verified known issues (confirmed present)
 

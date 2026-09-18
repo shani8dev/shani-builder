@@ -43,14 +43,17 @@ jobs:
       R2_BUCKET:            ${{ secrets.R2_BUCKET }}
 
     steps:
-      - name: Notify Discord — Promotion Started
+      - name: Notify Telegram — Promotion Started
         if: github.event_name == 'workflow_dispatch'
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          [ -z "$DISCORD_WEBHOOK" ] && exit 0
-          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" '{content: ("🔄 **ShaniOS Promotion Started**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`")}')
-          curl -s -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d "$MSG" || true
+          [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ] && exit 0
+          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" '{text: ("🔄 **ShaniOS Promotion Started**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`")}')
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg chat "$TELEGRAM_CHAT_ID" --argjson msg "$MSG" '{chat_id: $chat, text: $msg.text, parse_mode: "Markdown"}')" || true
 
       - name: Checkout shani-install-media
         uses: actions/checkout@v4
@@ -80,20 +83,26 @@ jobs:
         working-directory: shani-install-media
         run: sudo --preserve-env bash run_in_container.sh build.sh promote-stable -p "${{ matrix.profile }}"
 
-      - name: Notify Discord — Promotion Failed
+      - name: Notify Telegram — Promotion Failed
         if: failure() && github.event_name == 'workflow_dispatch'
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          [ -z "$DISCORD_WEBHOOK" ] && exit 0
-          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" '{content: ("❌ **ShaniOS Promotion Failed**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`\n[View logs](" + $run_url + ")")}')
-          curl -s -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d "$MSG" || true
+          [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ] && exit 0
+          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" '{text: ("❌ **ShaniOS Promotion Failed**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`\n[View logs](" + $run_url + ")")}')
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg chat "$TELEGRAM_CHAT_ID" --argjson msg "$MSG" '{chat_id: $chat, text: $msg.text, parse_mode: "Markdown"}')" || true
 
-      - name: Notify Discord — Promotion Succeeded
+      - name: Notify Telegram — Promotion Succeeded
         if: success() && github.event_name == 'workflow_dispatch'
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          [ -z "$DISCORD_WEBHOOK" ] && exit 0
-          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" '{content: ("✅ **ShaniOS Promotion Complete**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`")}')
-          curl -s -X POST "$DISCORD_WEBHOOK" -H "Content-Type: application/json" -d "$MSG" || true
+          [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ] && exit 0
+          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" '{text: ("✅ **ShaniOS Promotion Complete**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`")}')
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg chat "$TELEGRAM_CHAT_ID" --argjson msg "$MSG" '{chat_id: $chat, text: $msg.text, parse_mode: "Markdown"}')" || true

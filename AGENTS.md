@@ -148,7 +148,7 @@ section is deliberately just the current-state summary.
 - **CI status.** 6 workflow files: 4 build/publish — `build-docker.yaml`, `build.yaml`,
   `build-image.yml`, `promote-stable.yml` with concurrency groups and
   timeouts (60/120/360/15 min) — plus 2 auxiliary helpers: `ai-ci-fixer.yml`
-  (auto-retry on failed builds) and `notify-discord.yml` (manual-dispatch
+  (auto-retry on failed builds) and `notify-telegram.yml` (manual-dispatch
   notification). `build.yaml` also has `workflow_dispatch`
   now, so it can be triggered on demand (`gh workflow run "Build and
   Package"`), not just via the daily cron or a path-filtered push.

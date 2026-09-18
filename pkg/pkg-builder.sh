@@ -423,6 +423,7 @@ build_package() {
             # preserved environment when su runs it below. This keeps the
             # secret out of this command string entirely.
             inner="export GNUPGHOME=/home/builduser/.gnupg
+export HOME=/home/builduser
 
 # Import GPG key — passphrase read from the environment, piped via stdin.
 echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --import /home/builduser/.gnupg/temp-private.asc || { echo '"'"'GPG import failed'"'"'; exit 1; }

@@ -30,6 +30,14 @@ readonly GPG_PRIVATE_KEY="${GPG_PRIVATE_KEY:-}"
 # value into docker's argv, where `ps aux` / `/proc/<pid>/cmdline` could see it.
 export GPG_PASSPHRASE
 
+# GitHub Releases mirror (opt-in) — set SHANI_GH_REPO to "<owner>/<repo>"
+# (e.g. "shani8dev/shanios-releases") to mirror the published artifacts onto a
+# GitHub Release after commit_and_push. Uses python3+urllib only (the builder
+# image has no `gh` CLI). Absent the repo or a token, mirror_releases() is a
+# soft no-op so builds are never broken by mirroring misconfiguration.
+readonly SHANI_GH_REPO="${SHANI_GH_REPO:-}"
+readonly SHANI_GH_TOKEN="${SHANI_GH_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
+
 # ---------------------------------------------------------------------------
 # Environment sanitization - prevent host environment leaks
 # ---------------------------------------------------------------------------
@@ -634,6 +642,49 @@ commit_and_push() {
 }
 
 # ---------------------------------------------------------------------------
+# Mirror published artifacts to a GitHub Release (capability: upload-side).
+# ---------------------------------------------------------------------------
+# Uses python3+urllib (the builder Docker image has neither `gh` nor `curl`
+# usable for multipart uploads). Mirrors the db + each signed package
+# (.pkg.tar.zst + .sig) to a release tagged with the current BRANCH. Mirrors
+# shani-deploy/scripts/gen-efi.sh's "upload via python3 + urllib" style (see
+# /tmp/enigmars-analysis/build/fetch-kernel-repo.sh for the urllib auth header
+# pattern). Soft-skip when SHANI_GH_REPO or the token is empty.
+mirror_releases() {
+    local arch_dir="$1" tag="$2"
+
+    if [[ -z $SHANI_GH_REPO || -z $SHANI_GH_TOKEN ]]; then
+        log "GitHub Release mirror disabled (SHANI_GH_REPO/SHANI_GH_TOKEN unset) — skipping."
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "GitHub Release mirror: python3 not found — skipping."
+        return 0
+    fi
+
+    local artifacts=()
+    local f
+    for f in "$arch_dir"/shani.db.tar.gz "$arch_dir"/shani.files.tar.gz \
+             "$arch_dir"/shani.db.tar.gz.sig "$arch_dir"/shani.files.tar.gz.sig; do
+        [[ -f $f ]] && artifacts+=("$f")
+    done
+    for f in "$arch_dir"/*.pkg.tar.zst "$arch_dir"/*.pkg.tar.zst.sig; do
+        [[ -f $f ]] && artifacts+=("$f")
+    done
+
+    if [[ ${#artifacts[@]} -eq 0 ]]; then
+        log "GitHub Release mirror: no artifacts found in ${arch_dir} — skipping."
+        return 0
+    fi
+
+    log "Mirroring ${#artifacts[@]} artifact(s) to GitHub Release ${tag}..."
+    SHANI_GH_REPO="$SHANI_GH_REPO" SHANI_GH_TOKEN="$SHANI_GH_TOKEN" \
+    python3 "$PKG_BUILDER_DIR/pkg/mirror_releases.py" "$tag" "${artifacts[@]}" \
+        || { warn "GitHub Release mirror failed for tag ${tag}"; return 1; }
+    log "GitHub Release mirror complete for ${tag}."
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -682,6 +733,7 @@ else
 fi
 
 commit_and_push "shani-repo" "Update package repository with new builds"
+mirror_releases "${ARCH_DIR}" "${BRANCH}"
 
 # Report failures and exit non-zero so CI marks the run as failed.
 if [[ ${#FAILED_PACKAGES[@]} -gt 0 ]]; then

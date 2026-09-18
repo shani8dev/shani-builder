@@ -102,6 +102,23 @@ isn't an acceptable trade.
   bind-mounted secret file, give it its own `mktemp` call per use — don't
   hoist it to a shared variable "for efficiency."
 
+## Boundaries
+
+- ✅ **Always**: give any new bind-mounted secret file its own fresh
+  `mktemp` call per use, cleaned up via a `RETURN` trap — a shared/reused
+  temp file has broken builds twice for reasons that looked unrelated on
+  the surface (see "Things that have bitten this repo specifically").
+- ⚠️ **Ask first**: scoping `builduser`'s passwordless sudo down to an
+  allowlist — already investigated and found to provide false confidence
+  (`chroot`/`pacman` are each independently equivalent to full root); a
+  real fix needs a genuine architecture decision (VM isolation or a
+  mediating privileged helper), not a quick sudoers patch.
+- 🚫 **Never**: pass a secret as `-e VAR="$VAR"` to `docker run`/`podman
+  run`, and never assume "the passphrase isn't in the command string
+  anymore" is proof it doesn't leak — verify with the real `ps`/`/proc`
+  polling harness above, every time, both the outer container-launch
+  command and anything executed inside it.
+
 ## Audit-verified known issues (confirmed present)
 
 **For the full narrative, verification methodology, and before/after

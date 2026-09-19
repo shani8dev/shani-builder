@@ -75,9 +75,8 @@ jobs:
           FAILED_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "CROSS_REPO_PAT is not set — see this file's header comment. Skipping."
-            echo "should_fix=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::CROSS_REPO_PAT is not set on shani8dev/shani-builder — the AI CI fixer cannot open PRs. Provision it (see this file's header comment)."
+            exit 1
           fi
           BRANCH="ai/fix-ci-${FAILED_RUN_ID}"
           FOUND=false

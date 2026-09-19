@@ -735,13 +735,18 @@ for pkgbuild_dir in shani-pkgbuilds/*/; do
     # keep only tokens naming an in-tree package directory.
     # (No `local` here — this is a for-loop at script scope, not inside a
     # function; `local` outside a function is a syntax error.)
+    # `|| true` is load-bearing: under `set -o pipefail`, `grep` exits 1
+    # when a PKGBUILD has no depends/makedepends tokens, and the `while`
+    # loop exits 1 when its last dep token isn't an in-tree dir. Both are
+    # valid "no in-tree deps" outcomes, so a non-zero pipeline must not
+    # abort the script via `set -e`.
     in_tree_deps=$(awk 'BEGIN{b=0} /^[[:space:]]*(depends|makedepends)=\(/{b=1} b{print} /\)[[:space:]]*$/{if(b)b=0}' "${pkgbuild_dir}/PKGBUILD" 2>/dev/null \
         | grep -oE '[a-z0-9][a-z0-9._-]*' \
         | while read -r dep; do
             [[ -d "shani-pkgbuilds/${dep}" && -f "shani-pkgbuilds/${dep}/PKGBUILD" ]] && echo "$dep"
-          done | sort -u)
+          done | sort -u) || true
     for dep in $in_tree_deps; do
-        log "  ${pkgbuild_dir##*/}: depends on in-tree ${dep} — building first"
+        log "  $(basename "${pkgbuild_dir}"): depends on in-tree ${dep} — building first"
         if ! build_package "shani-pkgbuilds/${dep}"; then
             FAILED_PACKAGES+=("shani-pkgbuilds/${dep}")
             warn "Pre-pass: failed to build in-tree dependency ${dep}"

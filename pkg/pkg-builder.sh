@@ -45,10 +45,6 @@ readonly SHANI_GH_TOKEN="${SHANI_GH_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
 unset XDG_RUNTIME_DIR 2>/dev/null || true
 export HOME="${HOME:-/root}"
 
-# Per-package cache directory to prevent parallel build collisions
-PKG_CACHE_DIR="${BUILD_DIR:-/tmp}/pkg-cache"
-mkdir -p "${PKG_CACHE_DIR}"
-
 # Path to this repo's pkg/ directory — used to locate build-metrics.sh
 PKG_BUILDER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -151,6 +147,11 @@ case "$_ARCH" in
     *) echo "Unsupported architecture: ${_ARCH}" >&2; exit 1 ;;
 esac
 unset _ARCH
+
+# Change-detection manifest lives inside the published repo (per arch), so it
+# is versioned and present on the next fresh clone. The previous /tmp cache
+# never survived a CI runner, so every run rebuilt every package.
+PKG_HASH_MANIFEST="${ARCH_DIR}/.pkg-hashes"
 
 # ---------------------------------------------------------------------------
 # Docker — already present on GitHub runners; safety net for local use
@@ -326,6 +327,28 @@ _pkg_dir_hash() {
         | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
 }
 
+# Print the last-built source hash for a package (empty string if absent).
+_hash_manifest_get() {
+    local pkgname="$1"
+    [[ -f "${PKG_HASH_MANIFEST}" ]] || return 0
+    awk -v p="${pkgname}" '$1 == p { print $2 }' "${PKG_HASH_MANIFEST}"
+    return 0
+}
+
+# Atomically record/replace one package's source hash in the manifest.
+_hash_manifest_set() {
+    local pkgname="$1" hash="$2"
+    local tmp
+    tmp="$(mktemp "${PKG_HASH_MANIFEST}.XXXXXX")" || return 1
+    if [[ -f "${PKG_HASH_MANIFEST}" ]]; then
+        awk -v p="${pkgname}" '$1 != p' "${PKG_HASH_MANIFEST}" > "${tmp}"
+    fi
+    printf '%s %s\n' "${pkgname}" "${hash}" >> "${tmp}"
+    LC_ALL=C sort -k1,1 "${tmp}" -o "${tmp}"
+    mv "${tmp}" "${PKG_HASH_MANIFEST}" || { rm -f "${tmp}"; return 1; }
+    return 0
+}
+
 build_package() {
     local pkgbuild_dir="$1"
     local pkgbuild_dir_clean="${pkgbuild_dir%/}"
@@ -383,12 +406,9 @@ build_package() {
         # published, unless the maintainer remembers to also bump pkgrel.
         local pkgbuild_hash
         pkgbuild_hash="$(_pkg_dir_hash "${pkgbuild_dir}")"
-        local cache_hash_file="${PKG_CACHE_DIR}/${pkgname}.hash"
-        local cached_hash=""
-        if [[ -f "$cache_hash_file" ]]; then
-            cached_hash=$(cat "$cache_hash_file")
-        fi
-        if [[ "$pkgbuild_hash" == "$cached_hash" ]]; then
+        local cached_hash
+        cached_hash="$(_hash_manifest_get "${pkgname}")"
+        if [[ -n "$cached_hash" && "$pkgbuild_hash" == "$cached_hash" ]]; then
             log "Package sources unchanged (hash: ${pkgbuild_hash:0:12}...), skipping build."
             _record_build_metric "$pkgname" "alreadyBuilt" "$(date +%s.%N)" "$(date +%s.%N)" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
             PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pkg_file}")
@@ -513,7 +533,7 @@ echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd
 
     # Save package-dir hash for change detection on subsequent builds
     if [[ "$built" == "true" ]]; then
-        _pkg_dir_hash "${pkgbuild_dir}" > "${PKG_CACHE_DIR}/${pkgname}.hash" || true
+        _hash_manifest_set "${pkgname}" "$(_pkg_dir_hash "${pkgbuild_dir}")" || true
     fi
 
     # Clean up makepkg work directories.

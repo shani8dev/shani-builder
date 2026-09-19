@@ -148,11 +148,6 @@ case "$_ARCH" in
 esac
 unset _ARCH
 
-# Change-detection manifest lives inside the published repo (per arch), so it
-# is versioned and present on the next fresh clone. The previous /tmp cache
-# never survived a CI runner, so every run rebuilt every package.
-PKG_HASH_MANIFEST="${ARCH_DIR}/.pkg-hashes"
-
 # ---------------------------------------------------------------------------
 # Docker — already present on GitHub runners; safety net for local use
 # ---------------------------------------------------------------------------
@@ -314,41 +309,6 @@ cleanup_old_versions() {
 # pacman and repo-add both reject ASCII-armored .sig files.
 # ---------------------------------------------------------------------------
 
-# Hashes every tracked file under a package directory (excluding pkg/ and
-# src/ — makepkg's own build-output/work dirs, present after a build but not
-# before one; excluding them keeps the "before" and "after" hash comparable).
-# Used to detect whether a package's inputs changed, not just PKGBUILD's own
-# text — several packages here embed their installed files directly instead
-# of fetching a source=() ref, so PKGBUILD alone can be unchanged while the
-# actual content that would be packaged has.
-_pkg_dir_hash() {
-    local dir="$1"
-    find "${dir}" -type f \( -path '*/pkg/*' -o -path '*/src/*' \) -prune -o -type f -print 2>/dev/null \
-        | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
-}
-
-# Print the last-built source hash for a package (empty string if absent).
-_hash_manifest_get() {
-    local pkgname="$1"
-    [[ -f "${PKG_HASH_MANIFEST}" ]] || return 0
-    awk -v p="${pkgname}" '$1 == p { print $2 }' "${PKG_HASH_MANIFEST}"
-    return 0
-}
-
-# Atomically record/replace one package's source hash in the manifest.
-_hash_manifest_set() {
-    local pkgname="$1" hash="$2"
-    local tmp
-    tmp="$(mktemp "${PKG_HASH_MANIFEST}.XXXXXX")" || return 1
-    if [[ -f "${PKG_HASH_MANIFEST}" ]]; then
-        awk -v p="${pkgname}" '$1 != p' "${PKG_HASH_MANIFEST}" > "${tmp}"
-    fi
-    printf '%s %s\n' "${pkgname}" "${hash}" >> "${tmp}"
-    LC_ALL=C sort -k1,1 "${tmp}" -o "${tmp}"
-    mv "${tmp}" "${PKG_HASH_MANIFEST}" || { rm -f "${tmp}"; return 1; }
-    return 0
-}
-
 build_package() {
     local pkgbuild_dir="$1"
     local pkgbuild_dir_clean="${pkgbuild_dir%/}"
@@ -394,27 +354,16 @@ build_package() {
     local pkg_file="${pkgname}-${ver}-${pkgrel}-${pkg_arch}.pkg.tar.zst"
     local pkg_sig="${pkg_file}.sig"
 
-    # Skip if both package and signature already exist in the repo.
+    # Skip if this exact versioned artifact (and its signature) is already
+    # published. pkgver/pkgrel are embedded in pkg_file, so any version bump
+    # yields a new filename and forces a rebuild; only an unchanged package
+    # (same version) is skipped. No content hashing: editing a package
+    # without bumping pkgrel is out of contract and must be caught in review.
     if [[ -f "${ARCH_DIR}/${pkg_file}" && -f "${ARCH_DIR}/${pkg_sig}" ]]; then
-        log "Package ${pkg_file} already exists — checking if package sources changed..."
-        # Hash the WHOLE package directory, not just PKGBUILD: ~1/3 of the
-        # packages here (e.g. shani-circle-to-search, shani-chronoa) embed
-        # their installed files directly under the package dir instead of
-        # fetching a source=() tarball/VCS ref — hashing only PKGBUILD would
-        # let an edit to one of those embedded files go undetected and skip
-        # a rebuild it actually needs, silently keeping a stale package
-        # published, unless the maintainer remembers to also bump pkgrel.
-        local pkgbuild_hash
-        pkgbuild_hash="$(_pkg_dir_hash "${pkgbuild_dir}")"
-        local cached_hash
-        cached_hash="$(_hash_manifest_get "${pkgname}")"
-        if [[ -n "$cached_hash" && "$pkgbuild_hash" == "$cached_hash" ]]; then
-            log "Package sources unchanged (hash: ${pkgbuild_hash:0:12}...), skipping build."
-            _record_build_metric "$pkgname" "alreadyBuilt" "$(date +%s.%N)" "$(date +%s.%N)" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
-            PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pkg_file}")
-            return 0
-        fi
-        log "Package sources changed — rebuilding..."
+        log "Package ${pkg_file} already published — skipping build."
+        _record_build_metric "$pkgname" "alreadyBuilt" "$(date +%s.%N)" "$(date +%s.%N)" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
+        PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pkg_file}")
+        return 0
     fi
 
     log "Building: ${pkgname} ${ver}-${pkgrel}"
@@ -529,11 +478,6 @@ echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd
     # Post-build verification: compare against previous version.
     if [[ "$built" == "true" ]]; then
         _run_checkpkg "${pkgbuild_dir_clean}" "${pkg_file}"
-    fi
-
-    # Save package-dir hash for change detection on subsequent builds
-    if [[ "$built" == "true" ]]; then
-        _hash_manifest_set "${pkgname}" "$(_pkg_dir_hash "${pkgbuild_dir}")" || true
     fi
 
     # Clean up makepkg work directories.

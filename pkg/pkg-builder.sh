@@ -712,6 +712,42 @@ cleanup_old_versions "${ARCH_DIR}"
 PACKAGES_NEEDING_DB_UPDATE=()
 FAILED_PACKAGES=()
 
+# ---------------------------------------------------------------------------
+# Pre-pass: build in-tree dependencies first.
+#
+# The main loop below walks shani-pkgbuilds/*/ alphabetically. A package
+# whose depends=() names another local package (e.g. shani-desktop-gamescope
+# depends on gamescope-session-plus) hits "target not found" if its
+# dependency hasn't been built yet — makepkg -sc can't resolve a package
+# that isn't in any repo. Verified live: shani-desktop-gamescope failed with
+# exactly that error while its dependency built later in the same run.
+#
+# This scans every PKGBUILD's depends= for in-tree names and builds those
+# first. It's a single pass (not a full dependency graph) — enough for the
+# flat one-level local-dependency shape this repo has. A full topological
+# scheduler is master-roadmap item #5; this is the minimal fix for the
+# real failure mode.
+# ---------------------------------------------------------------------------
+log "Pre-pass: building in-tree dependencies before dependents..."
+for pkgbuild_dir in shani-pkgbuilds/*/; do
+    [[ -f "${pkgbuild_dir}/PKGBUILD" ]] || continue
+    # Extract the depends=(...) block (may span lines with comments) and
+    # keep only tokens naming an in-tree package directory.
+    local_deps=$(awk 'BEGIN{b=0} /^[[:space:]]*(depends|makedepends)=\(/{b=1} b{print} /\)[[:space:]]*$/{if(b)b=0}' "${pkgbuild_dir}/PKGBUILD" 2>/dev/null \
+        | grep -oE '[a-z0-9][a-z0-9._-]*' \
+        | while read -r dep; do
+            [[ -d "shani-pkgbuilds/${dep}" && -f "shani-pkgbuilds/${dep}/PKGBUILD" ]] && echo "$dep"
+          done | sort -u)
+    for dep in $local_deps; do
+        log "  ${pkgbuild_dir##*/}: depends on in-tree ${dep} — building first"
+        if ! build_package "shani-pkgbuilds/${dep}"; then
+            FAILED_PACKAGES+=("shani-pkgbuilds/${dep}")
+            warn "Pre-pass: failed to build in-tree dependency ${dep}"
+        fi
+        break
+    done
+done
+
 log "Building and signing packages..."
 for pkgbuild_dir in shani-pkgbuilds/*/; do
     if [[ ! -f "${pkgbuild_dir}/PKGBUILD" ]]; then

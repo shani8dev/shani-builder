@@ -733,12 +733,14 @@ for pkgbuild_dir in shani-pkgbuilds/*/; do
     [[ -f "${pkgbuild_dir}/PKGBUILD" ]] || continue
     # Extract the depends=(...) block (may span lines with comments) and
     # keep only tokens naming an in-tree package directory.
-    local_deps=$(awk 'BEGIN{b=0} /^[[:space:]]*(depends|makedepends)=\(/{b=1} b{print} /\)[[:space:]]*$/{if(b)b=0}' "${pkgbuild_dir}/PKGBUILD" 2>/dev/null \
+    # (No `local` here — this is a for-loop at script scope, not inside a
+    # function; `local` outside a function is a syntax error.)
+    in_tree_deps=$(awk 'BEGIN{b=0} /^[[:space:]]*(depends|makedepends)=\(/{b=1} b{print} /\)[[:space:]]*$/{if(b)b=0}' "${pkgbuild_dir}/PKGBUILD" 2>/dev/null \
         | grep -oE '[a-z0-9][a-z0-9._-]*' \
         | while read -r dep; do
             [[ -d "shani-pkgbuilds/${dep}" && -f "shani-pkgbuilds/${dep}/PKGBUILD" ]] && echo "$dep"
           done | sort -u)
-    for dep in $local_deps; do
+    for dep in $in_tree_deps; do
         log "  ${pkgbuild_dir##*/}: depends on in-tree ${dep} — building first"
         if ! build_package "shani-pkgbuilds/${dep}"; then
             FAILED_PACKAGES+=("shani-pkgbuilds/${dep}")

@@ -181,7 +181,9 @@ section is deliberately just the current-state summary.
 - **CI status.** 8 workflow files: 5 build/publish — `build-docker.yaml`, `build.yaml`,
   `build-image.yml`, `promote-stable.yml` with concurrency groups and
   timeouts (60/120/360/15 min), and `build.yml` (docker-image build via
-  `shani-ci-commons` `build.yml`) — plus 3 auxiliary helpers: `ai-ci-fixer.yml`
+  `shani-ci-commons` `build.yml`; fires on `pkg/**` only — `docker/**`
+  pushes are owned by `build-docker.yaml`, which also runs the secrets
+  scan) — plus 3 auxiliary helpers: `ai-ci-fixer.yml`
   (auto-retry on failed builds), `notify-telegram.yml` (manual-dispatch
   notification via `shani-ci-commons` `notify-telegram.yml`), and
   `metrics.yaml` (exports `pkg/build-metrics.sh` Prometheus metrics after

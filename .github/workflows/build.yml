@@ -19,5 +19,9 @@ jobs:
     name: Security
     uses: shani8dev/shani-ci-commons/.github/workflows/security.yml@main
     with:
-      scan-type: all
+      # shani-builder tracks no keyring files, so the keyring-checksum branch
+      # of security.yml (which runs tests/test-check-keyring-sync.sh from the
+      # caller repo root) is meaningless here — and that harness only exists
+      # in shani-pkgbuilds. Use secrets-scan only.
+      scan-type: secrets
     needs: build

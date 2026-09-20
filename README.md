@@ -254,7 +254,50 @@ Concurrency group: `pkg-build` (in-progress runs are not cancelled, preventing t
 | `R2_SECRET_ACCESS_KEY` | `build-image.yml` | Cloudflare R2 secret key _(optional)_ |
 | `R2_ACCOUNT_ID` | `build-image.yml` | Cloudflare account ID _(optional)_ |
 | `R2_BUCKET` | `build-image.yml` | R2 bucket name _(optional)_ |
-| `DISCORD_WEBHOOK` | `build-image.yml`, `promote-stable.yml`, `notify-discord.yml` | Discord webhook URL for build/promotion status notifications _(optional — steps no-op if unset)_ |
+| `DISCORD_WEBHOOK` | `build-image.yml`, `promote-stable.yml` | Discord webhook URL for build/promotion status notifications _(optional — steps no-op if unset)_ |
+
+---
+
+## Known gaps & design rules
+
+**Secret-handling invariants (don't reintroduce):**
+- Never pass a secret as `-e VAR="$VAR"` to `docker run`/`podman run` —
+  the literal value lands in that process's own argv. Pass the bare
+  `-e VAR` (no `=value`) with the value already exported, so the
+  container runtime forwards it without ever writing it into its own
+  command line.
+- Verify secret-handling changes with the real `ps`/`/proc` polling
+  harness, every time, both the outer container-launch command and
+  anything executed inside it.
+- Give any bind-mounted secret file its own fresh `mktemp` call per use,
+  cleaned up via a `RETURN` trap — a shared/reused temp file has broken
+  builds twice here for reasons that looked unrelated on the surface.
+
+**Open, not yet independently verified:**
+- `builduser` has unrestricted passwordless root via sudo
+  (`docker/Dockerfile:40` grants `builduser ALL=(ALL) NOPASSWD: ALL`), so
+  the "eval source of PKGBUILD" risk isn't actually contained by running
+  unprivileged — a malicious PKGBUILD can trivially `sudo` to full root.
+  A scoped-by-binary-path sudoers allowlist would not actually contain
+  this threat (`chroot` and `pacman` are each independently equivalent to
+  unrestricted root), so a real fix needs genuine VM-level isolation or a
+  mediating privileged helper — an architecture decision, not a code patch.
+
+**Cross-repo impact:**
+- This repo's Docker image is consumed by **two** other repos'
+  `run_in_container.sh` (`shani-install-media` and `shani-pkgbuilds` —
+  those are separate, duplicated copies of that script, not shared). A
+  change here — a new tool, a base-image bump, a permission change — can
+  affect both consumers differently; check both after any change, not
+  just the one you happened to be testing against.
+- `shani-pkgbuilds`'s `validpgpkeys` pre-import was fixed *here*
+  (`pkg/pkg-builder.sh`) because nothing in this repo imported a PKGBUILD's
+  declared keys before `makepkg` ran — see
+  `shani-pkgbuilds/AGENTS.md` for the matching finding.
+
+**Trust model:** See `SECURITY.md` for the intended secret-handling model
+— if a change makes either untrue in practice (even if the code "looks"
+like it matches), that's the regression to fix, not the documentation.
 
 ---
 
@@ -265,6 +308,9 @@ Concurrency group: `pkg-build` (in-progress runs are not cancelled, preventing t
 | [shani-install-media](https://github.com/shani8dev/shani-install-media) | ISO and system image build pipeline — consumes this Docker image |
 | [shani-pkgbuilds](https://github.com/shani8dev/shani-pkgbuilds) | PKGBUILD sources for Shanios custom packages |
 | [shani-repo](https://github.com/shani8dev/shani-repo) | Published Arch-compatible package repository (`https://repo.shani.dev`) |
+| [shani-keyring](https://github.com/shani8dev/shani-keyring) | Pacman trust root — source of the `[shani]` repo signing key this repo imports |
+| [shani-deploy](https://github.com/shani8dev/shani-deploy) | Blue-green deploy/rollback/health scripts — its `self_update()` trust chain mirrors this repo's signing logic |
+| [shani-ci-commons](https://github.com/shani8dev/shani-ci-commons) | Shared CI templates — this repo's `build.yml`/`notify-telegram.yml`/`metrics.yaml` reference it via `uses:` |
 
 ---
 

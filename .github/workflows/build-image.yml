@@ -125,14 +125,6 @@ jobs:
         working-directory: shani-install-media
         run: sudo --preserve-env bash run_in_container.sh build.sh verify -p "${{ matrix.profile }}"
 
-      - name: Upload build artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: shani-image-${{ matrix.profile }}-${{ github.sha }}
-          path: shani-install-media/cache/output/
-          retention-days: 7
-
       - name: Notify Telegram — Build Failed
         if: failure() && github.event_name == 'workflow_dispatch'
         uses: shani8dev/shani-ci-commons/.github/actions/send-telegram@main

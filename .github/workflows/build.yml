@@ -4,7 +4,9 @@ on:
   push:
     branches: [main]
     paths:
-      - 'docker/**'
+      # docker/** deliberately absent: the Docker image (build + push + secrets
+      # scan) is owned by build-docker.yaml, which fires on docker/** pushes.
+      # Re-adding docker/** here double-builds every Docker change.
       - 'pkg/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:

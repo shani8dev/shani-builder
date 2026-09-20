@@ -73,3 +73,17 @@ jobs:
           echo "| latest | \`${REPO}:latest\` |"    >> "$GITHUB_STEP_SUMMARY"
           echo "| date   | \`${REPO}:${DATE}\` |"   >> "$GITHUB_STEP_SUMMARY"
           echo "| sha    | \`${REPO}:${SHA}\` |"    >> "$GITHUB_STEP_SUMMARY"
+
+  # This workflow is the sole owner of docker/** pushes (build.yml no
+  # longer triggers on them), so the secrets scan must run here — not in
+  # build.yml — or docker/** changes lose scan coverage entirely.
+  security:
+    name: Security
+    needs: build
+    uses: shani8dev/shani-ci-commons/.github/workflows/security.yml@main
+    with:
+      # shani-builder tracks no keyring files, so the keyring-checksum branch
+      # of security.yml (which runs tests/test-check-keyring-sync.sh from the
+      # caller repo root) is meaningless here — and that harness only exists
+      # in shani-pkgbuilds. Use secrets-scan only.
+      scan-type: secrets

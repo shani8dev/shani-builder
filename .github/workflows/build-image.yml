@@ -93,7 +93,7 @@ jobs:
           mkdir -p shani-install-media/keys/mok
           printf '%s\n' "${{ secrets.MOK_KEY }}"  > shani-install-media/keys/mok/MOK.key
           printf '%s\n' "${{ secrets.MOK_CRT }}"  > shani-install-media/keys/mok/MOK.crt
-          printf '%s\n' "${{ secrets.MOK_DER_B64 }}" | base64 --decode \
+          printf '%s\n' "${{ secrets.MOK_DER }}" | base64 --decode \
             > shani-install-media/keys/mok/MOK.der
 
       - name: Export GPG public key

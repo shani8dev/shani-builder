@@ -8,6 +8,9 @@ on:
         required: false
         type: choice
         options:
+          # '' is intentional and required: default: '' ("all profiles") must
+          # be one of the options for a workflow_dispatch choice input. The
+          # matrix below maps '' -> ['gnome', 'plasma'].
           - ''
           - gnome
           - plasma
@@ -55,15 +58,14 @@ jobs:
     steps:
       - name: Notify Telegram — Build Started
         if: github.event_name == 'workflow_dispatch'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ] && exit 0
-          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" --arg sha "${{ github.sha }}" '{text: ("🏗️ **ShaniOS Image Build Started**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`\nSHA: `" + $sha + "`")}')
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n --arg chat "$TELEGRAM_CHAT_ID" --argjson msg "$MSG" '{chat_id: $chat, text: $msg.text, parse_mode: "Markdown"}')" || true
+        uses: shani8dev/shani-ci-commons/.github/actions/send-telegram@main
+        with:
+          status: started
+          message: |-
+            **ShaniOS Image Build Started**
+            Profile: `${{ matrix.profile }}`
+            Branch: `${{ github.ref_name }}`
+            SHA: `${{ github.sha }}`
 
       - name: Free disk space
         run: |
@@ -133,24 +135,22 @@ jobs:
 
       - name: Notify Telegram — Build Failed
         if: failure() && github.event_name == 'workflow_dispatch'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ] && exit 0
-          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" '{text: ("❌ **ShaniOS Image Build Failed**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`\n[View logs](" + $run_url + ")")}')
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n --arg chat "$TELEGRAM_CHAT_ID" --argjson msg "$MSG" '{chat_id: $chat, text: $msg.text, parse_mode: "Markdown"}')" || true
+        uses: shani8dev/shani-ci-commons/.github/actions/send-telegram@main
+        with:
+          status: failure
+          message: |-
+            **ShaniOS Image Build Failed**
+            Profile: `${{ matrix.profile }}`
+            Branch: `${{ github.ref_name }}`
+            [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
       - name: Notify Telegram — Build Succeeded
         if: success() && github.event_name == 'workflow_dispatch'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ] && exit 0
-          MSG=$(jq -n --arg profile "${{ matrix.profile }}" --arg ref "${{ github.ref_name }}" --arg sha "${{ github.sha }}" '{text: ("✅ **ShaniOS Image Build Complete**\nProfile: `" + $profile + "`\nBranch: `" + $ref + "`\nSHA: `" + $sha + "`")}')
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n --arg chat "$TELEGRAM_CHAT_ID" --argjson msg "$MSG" '{chat_id: $chat, text: $msg.text, parse_mode: "Markdown"}')" || true
+        uses: shani8dev/shani-ci-commons/.github/actions/send-telegram@main
+        with:
+          status: success
+          message: |-
+            **ShaniOS Image Build Complete**
+            Profile: `${{ matrix.profile }}`
+            Branch: `${{ github.ref_name }}`
+            SHA: `${{ github.sha }}`

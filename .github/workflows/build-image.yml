@@ -60,6 +60,8 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: shani8dev/shani-ci-commons/.github/actions/send-telegram@main
         with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
           status: started
           message: |-
             **ShaniOS Image Build Started**
@@ -137,6 +139,8 @@ jobs:
         if: failure() && github.event_name == 'workflow_dispatch'
         uses: shani8dev/shani-ci-commons/.github/actions/send-telegram@main
         with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
           status: failure
           message: |-
             **ShaniOS Image Build Failed**
@@ -148,6 +152,8 @@ jobs:
         if: success() && github.event_name == 'workflow_dispatch'
         uses: shani8dev/shani-ci-commons/.github/actions/send-telegram@main
         with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
           status: success
           message: |-
             **ShaniOS Image Build Complete**

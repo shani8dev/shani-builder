@@ -12,6 +12,15 @@ on:
           - gnome
           - plasma
           - cosmic
+      artifact:
+        description: 'What to gate and promote (the base image and the ISO are built and promoted separately)'
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - image
+          - iso
       gate_only:
         description: 'Only run the release gate (test), do not promote'
         required: false
@@ -27,12 +36,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Only a build that passed shani-testbed's release gate is promoted: the
-  # PUBLISHED candidate ISO installed and upgraded to the candidate image,
-  # and current stable upgraded to it, both by the self-updated shani-deploy
-  # and rolled back (identity, verify-boot, slot-tests, desktop). The gate
-  # writes what it tested; promote-stable.sh --expect/--expect-iso refuse
-  # if latest.txt / iso-latest.txt moved meanwhile.
+  # Only what passed shani-testbed's release gate is promoted, the image and
+  # the ISO separately. ISO: the published candidate ISO booted under UEFI,
+  # installed by its own installer, first-updated as the timer would. Image:
+  # a new user (ISO install -> candidate) and an existing user (stable ->
+  # candidate), each by the self-updated shani-deploy and rolled back. The
+  # gate writes gate-<profile>.{image,iso}.passed; promote-stable.sh --only
+  # with --expect / --expect-iso refuses if a pointer moved meanwhile.
   promote-stable:
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -43,9 +53,28 @@ jobs:
     strategy:
       matrix:
         profile: ${{ github.event_name == 'schedule' && fromJson('["gnome", "plasma"]') || fromJson(github.event.inputs.profile != 'all' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
+        artifact: ${{ (github.event_name == 'schedule' || github.event.inputs.artifact == 'all') && fromJson('["image", "iso"]') || fromJson(format('["{0}"]', github.event.inputs.artifact)) }}
       fail-fast: false
 
     steps:
+      # latest == stable (or iso-latest == iso-stable): nothing new was
+      # published for this artifact - skip the hour-long gate on a schedule.
+      # A manual dispatch always runs.
+      - name: Anything new to gate? — ${{ matrix.profile }} ${{ matrix.artifact }}
+        id: new
+        env:
+          PROFILE: ${{ matrix.profile }}
+          ARTIFACT: ${{ matrix.artifact }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          base=https://downloads.shani.dev/${PROFILE}
+          get() { curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 30 "$base/$1.txt" 2>/dev/null | tr -d '[:space:]'; }
+          if [ "$ARTIFACT" = iso ]; then cand=$(get iso-latest); cur=$(get iso-stable); else cand=$(get latest); cur=$(get stable); fi
+          echo "candidate=${cand:-none} current stable=${cur:-none}"
+          if [ -z "$cand" ]; then echo "::notice::no ${ARTIFACT} candidate published for ${PROFILE}"; echo run=false >> "$GITHUB_OUTPUT"
+          elif [ "$cand" = "$cur" ] && [ "$EVENT" = schedule ]; then echo "::notice::${PROFILE} ${ARTIFACT} ${cand} is already stable - nothing to gate"; echo run=false >> "$GITHUB_OUTPUT"
+          else echo run=true >> "$GITHUB_OUTPUT"; fi
+
       - name: Notify Telegram — Promotion Started
         if: github.event_name == 'workflow_dispatch'
         uses: shani8dev/shani-ci-commons/.github/actions/send-telegram@main
@@ -59,6 +88,7 @@ jobs:
             Branch: `${{ github.ref_name }}`
 
       - name: Checkout shani-install-media
+        if: steps.new.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
           repository: shani8dev/shani-install-media
@@ -69,6 +99,7 @@ jobs:
       # the harness and the installer it runs are siblings of shani-install-media
       # (run_in_container.sh mounts ../shani-testbed and ../os-installer-config)
       - name: Checkout shani-testbed
+        if: steps.new.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
           repository: shani8dev/shani-testbed
@@ -76,6 +107,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout os-installer-config
+        if: steps.new.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
           repository: shani8dev/os-installer-config
@@ -83,6 +115,7 @@ jobs:
           persist-credentials: false
 
       - name: Free disk space for the gate
+        if: steps.new.outputs.run == 'true'
         run: |
           # an ~8 GB ISO, two ~3 GB images, a 24G sparse install disk, overlays
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
@@ -90,25 +123,31 @@ jobs:
           df -h /
 
       - name: Make scripts executable
+        if: steps.new.outputs.run == 'true'
         run: chmod +x shani-install-media/run_in_container.sh shani-install-media/build.sh
 
-      - name: Release gate — ${{ matrix.profile }}
+      - name: Release gate — ${{ matrix.profile }} ${{ matrix.artifact }}
+        if: steps.new.outputs.run == 'true'
         working-directory: shani-install-media
-        run: sudo bash run_in_container.sh build.sh test gate -p "${{ matrix.profile }}"
+        run: sudo bash run_in_container.sh build.sh test gate -p "${{ matrix.profile }}" --for="${{ matrix.artifact }}"
 
       - name: Upload gate results
-        if: always()
+        if: always() && steps.new.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: gate-${{ matrix.profile }}
+          name: gate-${{ matrix.profile }}-${{ matrix.artifact }}
           path: |
             shani-install-media/test-env/disk/gate-*.json
             shani-install-media/test-env/disk/*-console.log
             shani-install-media/test-env/shots/gate-*.png
           if-no-files-found: warn
 
+      # The image and the ISO are promoted separately, each only if the gate
+      # wrote its marker: a failing ISO must not hold back a tested image
+      # (or the reverse). !cancelled() lets them run after the gate step
+      # failed on the other artifact; the job still shows the failure.
       - name: Validate SSH deploy key
-        if: ${{ !inputs.gate_only }}
+        if: ${{ !cancelled() && !inputs.gate_only && (hashFiles(format('shani-install-media/test-env/disk/gate-{0}.image.passed', matrix.profile)) != '' || hashFiles(format('shani-install-media/test-env/disk/gate-{0}.iso.passed', matrix.profile)) != '') }}
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
@@ -129,8 +168,8 @@ jobs:
 
       # secrets only here, not in the job env: the gate runs harness code
       # and published images and needs none
-      - name: Promote the tested build to stable — ${{ matrix.profile }}
-        if: ${{ !inputs.gate_only }}
+      - name: Promote the tested base image — ${{ matrix.profile }}
+        if: ${{ !cancelled() && !inputs.gate_only && matrix.artifact == 'image' && hashFiles(format('shani-install-media/test-env/disk/gate-{0}.image.passed', matrix.profile)) != '' }}
         working-directory: shani-install-media
         env:
           SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
@@ -139,10 +178,23 @@ jobs:
           R2_ACCOUNT_ID:        ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET:            ${{ secrets.R2_BUCKET }}
         run: |
-          # line 1: the tested image, line 2: the tested ISO folder
-          mapfile -t tested < "test-env/disk/gate-${{ matrix.profile }}.passed"
+          tested="$(cat "test-env/disk/gate-${{ matrix.profile }}.image.passed")"
           sudo --preserve-env bash run_in_container.sh build.sh promote-stable -p "${{ matrix.profile }}" \
-            --expect="${tested[0]}" --expect-iso="${tested[1]}"
+            --only=image --expect="${tested}"
+
+      - name: Promote the tested ISO — ${{ matrix.profile }}
+        if: ${{ !cancelled() && !inputs.gate_only && matrix.artifact == 'iso' && hashFiles(format('shani-install-media/test-env/disk/gate-{0}.iso.passed', matrix.profile)) != '' }}
+        working-directory: shani-install-media
+        env:
+          SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
+          R2_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID:        ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET:            ${{ secrets.R2_BUCKET }}
+        run: |
+          tested="$(cat "test-env/disk/gate-${{ matrix.profile }}.iso.passed")"
+          sudo --preserve-env bash run_in_container.sh build.sh promote-stable -p "${{ matrix.profile }}" \
+            --only=iso --expect-iso="${tested}"
 
       - name: Notify Telegram — Promotion Failed
         if: failure() && github.event_name == 'workflow_dispatch'

@@ -43,7 +43,6 @@ jobs:
 
     permissions:
       contents: read
-      id-token: write
 
     env:
       SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
@@ -88,16 +87,23 @@ jobs:
           path: shani-install-media
           clean: true
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Make scripts executable
         run: chmod +x shani-install-media/run_in_container.sh shani-install-media/build.sh
 
       - name: Setup MOK keys
+        # Secrets via env, not ${{ }} inside run: — inline expressions are
+        # pasted into the script text before bash parses it.
+        env:
+          MOK_KEY: ${{ secrets.MOK_KEY }}
+          MOK_CRT: ${{ secrets.MOK_CRT }}
+          MOK_DER: ${{ secrets.MOK_DER }}
         run: |
           mkdir -p shani-install-media/keys/mok
-          printf '%s\n' "${{ secrets.MOK_KEY }}"  > shani-install-media/keys/mok/MOK.key
-          printf '%s\n' "${{ secrets.MOK_CRT }}"  > shani-install-media/keys/mok/MOK.crt
-          printf '%s\n' "${{ secrets.MOK_DER }}" | base64 --decode \
+          printf '%s\n' "$MOK_KEY" > shani-install-media/keys/mok/MOK.key
+          printf '%s\n' "$MOK_CRT" > shani-install-media/keys/mok/MOK.crt
+          printf '%s\n' "$MOK_DER" | base64 --decode \
             > shani-install-media/keys/mok/MOK.der
 
       - name: Export GPG public key

@@ -133,6 +133,27 @@ rather than writing in a generic format.
 evidence behind every FIXED line below, see `AUDIT-HISTORY.md`.** This
 section is deliberately just the current-state summary.
 
+- **Publish workflows: secrets interpolated inline into `run:`, unused
+  `id-token: write`, persisted checkout credentials — FIXED (2026-09-23).**
+  `build-image.yml` "Setup MOK keys" pasted `${{ secrets.MOK_KEY/CRT/DER }}`
+  straight into the script text, and `promote-stable.yml` "Validate SSH
+  deploy key" did the same with `SSH_PRIVATE_KEY` (also into a fixed
+  `/tmp/deploy_key`). GitHub substitutes `${{ }}` before bash parses the
+  script, so a secret value containing `"` or `$(...)` becomes shell code.
+  Now passed via step/job `env:` and read as `"$VAR"`; the SSH check uses a
+  `mktemp` file. Verified by extracting each real `run:` block from the
+  YAML and executing it: valid key → "format is valid"; garbage →
+  `::warning::`; unset → silent rc=0; MOK files byte-identical to the input
+  (`cmp` + `openssl rsa -check`). A hostile value `x"; touch pwned; echo "`
+  injected a command under the **old** inline form (simulated
+  substitution) and not under the new one. Also removed `id-token: write`
+  from both jobs (nothing requests an OIDC token: no `actions/attest`, no
+  cloud-auth action) and set `persist-credentials: false` on both
+  `shani-install-media` checkouts (neither workflow nor the scripts it runs
+  does any git push). Not yet run on GitHub Actions itself. Note: a
+  `${{ }}` expression inside a `run:` **comment** is still evaluated by
+  GitHub, so don't write one there.
+
 - **`rebuild_database()` never signed the package database — FIXED,
   root cause of `shani-repo`'s "unsigned package database" Critical
   finding.** `pkg/pkg-builder.sh`'s `rebuild_database()` ran bare

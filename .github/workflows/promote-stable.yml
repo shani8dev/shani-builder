@@ -28,7 +28,6 @@ jobs:
 
     permissions:
       contents: read
-      id-token: write
 
     strategy:
       matrix:
@@ -61,22 +60,26 @@ jobs:
           repository: shani8dev/shani-install-media
           path: shani-install-media
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Make scripts executable
         run: chmod +x shani-install-media/run_in_container.sh shani-install-media/build.sh
 
       - name: Validate SSH deploy key
         run: |
-          if [ -n "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
+          # SSH_PRIVATE_KEY comes from the job-level env: block. Don't inline
+          # a secrets expression here: it is pasted into the script text.
+          if [ -n "${SSH_PRIVATE_KEY:-}" ]; then
             echo "SSH_PRIVATE_KEY is set — validating format..."
-            echo "${{ secrets.SSH_PRIVATE_KEY }}" > /tmp/deploy_key
-            chmod 600 /tmp/deploy_key
-            if ! ssh-keygen -y -f /tmp/deploy_key >/dev/null 2>&1; then
+            key_file=$(mktemp)
+            chmod 600 "$key_file"
+            printf '%s\n' "$SSH_PRIVATE_KEY" > "$key_file"
+            if ! ssh-keygen -y -f "$key_file" >/dev/null 2>&1; then
               echo "::warning::SSH_PRIVATE_KEY could not be parsed as a private key."
             else
               echo "SSH key format is valid."
             fi
-            rm -f /tmp/deploy_key
+            rm -f "$key_file"
           fi
 
       - name: Promote latest to stable — ${{ matrix.profile }}

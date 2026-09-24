@@ -359,6 +359,17 @@ build_package() {
     # yields a new filename and forces a rebuild; only an unchanged package
     # (same version) is skipped. No content hashing: editing a package
     # without bumping pkgrel is out of contract and must be caught in review.
+    # Published but unsigned: never rebuild it. A rebuild republishes the SAME
+    # filename with different bytes, and every machine or builder holding
+    # the old copy in its pacman cache then fails "invalid or corrupted
+    # package (checksum)" - shani-repo has files re-committed 12-17 times
+    # under one name from 2026-09-19. Re-sign the existing file, or bump
+    # pkgrel.
+    if [[ -f "${ARCH_DIR}/${pkg_file}" && ! -f "${ARCH_DIR}/${pkg_sig}" ]]; then
+        warn "${pkg_file} is published without ${pkg_sig} - refusing to rebuild the same version (re-sign it, or bump pkgrel)"
+        _record_build_metric "$pkgname" "unsignedPublished" "$(date +%s.%N)" "$(date +%s.%N)" "published without signature" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
+        return 1
+    fi
     if [[ -f "${ARCH_DIR}/${pkg_file}" && -f "${ARCH_DIR}/${pkg_sig}" ]]; then
         log "Package ${pkg_file} already published — skipping build."
         _record_build_metric "$pkgname" "alreadyBuilt" "$(date +%s.%N)" "$(date +%s.%N)" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"

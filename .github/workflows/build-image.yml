@@ -171,52 +171,54 @@ jobs:
       - name: Resolve R2 artifact URLs — ${{ matrix.profile }}
         if: steps.plan.outputs.run == 'true'
         id: resolve
-        # Emit the ISO plus its sidecars (torrent / asc / sha256) as
-        # individually HEAD-verified links, so the success notification
-        # carries only URLs that actually resolve on the mirror.
-        #
-        # Two filename conventions matter here and are easy to get wrong:
-        #   - the base image is  shanios-YYYYMMDD-<profile>.zst
-        #   - the signed ISO is signed_shanios-<profile>-YYYY.MM.DD-x86_64.iso
-        #     (dotted date, hyphenated profile, x86_64 suffix) — probing the
-        #     ISO with an 8-digit date 404s on every mirror, which is how this
-        #     step was validated before being wired in.
-        # ${profile}/iso-latest.txt holds just the 8-digit date; the dotted
-        # form is derived from it below.
+        # Links for what THIS run published, HEAD-verified so the notification
+        # only carries URLs that resolve: the base image for `all`, the ISO for
+        # `iso-release`, both for `full`. (It used to always emit the ISO -
+        # for an image-only build that was the previous, unrelated ISO.)
+        #   - base image: shanios-YYYYMMDD-<profile>.zst, named by latest.txt
+        #   - signed ISO: signed_shanios-<profile>-YYYY.MM.DD-x86_64.iso
+        #     (dotted date); iso-latest.txt holds just the 8-digit date
+        env:
+          MODE: ${{ steps.plan.outputs.mode }}
+          PROFILE: ${{ matrix.profile }}
         run: |
           BASE_URL="${R2_BASE_URL:-https://downloads.shani.dev}"
-          PROFILE="${{ matrix.profile }}"
-          iso_date="$(curl -fsSL --max-time 30 --retry 2 --retry-delay 2 \
-            "${BASE_URL}/${PROFILE}/iso-latest.txt" 2>/dev/null || true)"
-          iso_date="$(echo "$iso_date" | grep -oE '[0-9]{8}' | head -n1 || true)"
-
-          # No ISO published yet for this profile — emit nothing, warn, don't fail.
-          if [[ -z "$iso_date" ]]; then
-            for k in iso_url torrent_url asc_url sha256_url; do echo "${k}=" >> "$GITHUB_OUTPUT"; done
-            echo "::warning::No ISO on R2 for ${PROFILE} (iso-latest.txt empty/unreachable) — no artifact links emitted"
-            exit 0
-          fi
-
-          iso_dot="$(echo "$iso_date" | sed -E 's/([0-9]{4})([0-9]{2})([0-9]{2})/\1.\2.\3/')"
-          ISO_NAME="signed_shanios-${PROFILE}-${iso_dot}-x86_64.iso"
-          ISO_DIR="${BASE_URL}/${PROFILE}/${iso_date}"
-
-          # HEAD-verify each sidecar; only emit the ones that resolve, so a
-          # dangling pointer (iso-latest.txt pointing at a pruned folder)
-          # never produces a broken link in the notification.
           verify() {
             local url="$1" out="$2"
             if curl -fsSL --max-time 20 --head "$url" >/dev/null 2>&1; then
               echo "${out}=${url}" >> "$GITHUB_OUTPUT"
             else
               echo "${out}=" >> "$GITHUB_OUTPUT"
-              echo "::warning::Sidecar not reachable, omitting from notification: ${url}"
+              echo "::warning::Not reachable, omitting from notification: ${url}"
             fi
           }
-          verify "${ISO_DIR}/${ISO_NAME}"           iso_url
-          verify "${ISO_DIR}/${ISO_NAME}.torrent"   torrent_url
-          verify "${ISO_DIR}/${ISO_NAME}.asc"       asc_url
-          verify "${ISO_DIR}/${ISO_NAME}.sha256"    sha256_url
+          get() { curl -fsSL --max-time 30 --retry 2 --retry-delay 2 "${BASE_URL}/${PROFILE}/$1" 2>/dev/null | tr -d '[:space:]' || true; }
+
+          if [[ "$MODE" == all || "$MODE" == full ]]; then
+            img="$(get latest.txt)"; img_date="$(grep -oE '[0-9]{8}' <<<"$img" | head -n1 || true)"
+            if [[ -n "$img_date" ]]; then
+              verify "${BASE_URL}/${PROFILE}/${img_date}/${img}"        image_url
+              verify "${BASE_URL}/${PROFILE}/${img_date}/${img}.sha256" image_sha256_url
+              verify "${BASE_URL}/${PROFILE}/${img_date}/${img}.asc"    image_asc_url
+            else
+              echo "::warning::latest.txt empty/unreachable for ${PROFILE}"
+            fi
+          fi
+
+          if [[ "$MODE" == iso-release || "$MODE" == full ]]; then
+            iso_date="$(grep -oE '[0-9]{8}' <<<"$(get iso-latest.txt)" | head -n1 || true)"
+            if [[ -n "$iso_date" ]]; then
+              iso_dot="$(sed -E 's/([0-9]{4})([0-9]{2})([0-9]{2})/\1.\2.\3/' <<<"$iso_date")"
+              ISO_NAME="signed_shanios-${PROFILE}-${iso_dot}-x86_64.iso"
+              ISO_DIR="${BASE_URL}/${PROFILE}/${iso_date}"
+              verify "${ISO_DIR}/${ISO_NAME}"         iso_url
+              verify "${ISO_DIR}/${ISO_NAME}.torrent" torrent_url
+              verify "${ISO_DIR}/${ISO_NAME}.asc"     asc_url
+              verify "${ISO_DIR}/${ISO_NAME}.sha256"  sha256_url
+            else
+              echo "::warning::No ISO on R2 for ${PROFILE} (iso-latest.txt empty/unreachable)"
+            fi
+          fi
 
       - name: Notify Telegram — Build Succeeded
         if: success() && github.event_name == 'workflow_dispatch' && steps.plan.outputs.run == 'true'
@@ -232,10 +234,14 @@ jobs:
           # wording here since the message already says "Build Complete".
           repo-name: ""
           message: |-
-            **ShaniOS Image Build Complete**
+            **ShaniOS Build Complete**
             Profile: `${{ matrix.profile }}`
             Branch: `${{ github.ref_name }}`
             SHA: `${{ github.sha }}`
+            Built: `${{ steps.plan.outputs.mode }}`
+            ${{ steps.resolve.outputs.image_url != '' && format('Image: [{0}]({0})', steps.resolve.outputs.image_url) || '' }}
+            ${{ steps.resolve.outputs.image_sha256_url != '' && format('Image SHA-256: [{0}]({0})', steps.resolve.outputs.image_sha256_url) || '' }}
+            ${{ steps.resolve.outputs.image_asc_url != '' && format('Image signature: [{0}]({0})', steps.resolve.outputs.image_asc_url) || '' }}
             ${{ steps.resolve.outputs.iso_url != '' && format('ISO: [{0}]({0})', steps.resolve.outputs.iso_url) || '' }}
             ${{ steps.resolve.outputs.torrent_url != '' && format('Torrent: [{0}]({0})', steps.resolve.outputs.torrent_url) || '' }}
             ${{ steps.resolve.outputs.asc_url != '' && format('Signature: [{0}]({0})', steps.resolve.outputs.asc_url) || '' }}

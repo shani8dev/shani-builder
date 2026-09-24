@@ -17,15 +17,18 @@ on:
           - cosmic
         default: ''
       build_mode:
-        description: 'Build mode: all (image + release + upload) or full (all + flatpak/snap + iso + repack + upload all). Scheduled runs always build full.'
+        description: 'Build mode: all (base image + upload), iso-release (Flatpak/Snap + ISO around the STABLE image + upload iso) or full (everything at once, ISO from the new image). Scheduled: image weekly, iso-release every even ISO week.'
         required: false
         type: choice
         options:
           - all
+          - iso-release
           - full
         default: all
   schedule:
-    # Every Friday 20:30 UTC → Saturday 2:00 AM IST
+    # Every Friday 20:30 UTC → Saturday 2:00 AM IST: the base image weekly;
+    # the ISO (iso-release) only in even ISO weeks - cron has no "every
+    # other week", so the plan step below checks `date +%V`.
     - cron: '30 20 * * 5'
 
 concurrency:
@@ -39,6 +42,8 @@ jobs:
     strategy:
       matrix:
         profile: ${{ fromJson(github.event.inputs.profile != '' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
+        # image and ISO are separate artifacts: separate jobs, run in parallel
+        task: ${{ github.event_name == 'schedule' && fromJson('["image", "iso"]') || fromJson(github.event.inputs.build_mode == 'iso-release' && '["iso"]' || '["image"]') }}
       fail-fast: false
 
     permissions:
@@ -55,6 +60,22 @@ jobs:
       R2_BUCKET:            ${{ secrets.R2_BUCKET }}
 
     steps:
+      - name: Plan — ${{ matrix.profile }} ${{ matrix.task }}
+        id: plan
+        env:
+          TASK: ${{ matrix.task }}
+          EVENT: ${{ github.event_name }}
+          INPUT_MODE: ${{ github.event.inputs.build_mode }}
+        run: |
+          if [ "$EVENT" != schedule ]; then mode="${INPUT_MODE:-all}"
+          elif [ "$TASK" = image ]; then mode=all
+          elif [ $(( 10#$(date -u +%V) % 2 )) -eq 0 ]; then mode=iso-release
+          else mode=""; echo "::notice::odd ISO week $(date -u +%V) - no ISO build this week"; fi
+          case "$mode" in all) verify=image ;; full) verify=all ;; iso-release) verify=iso ;; *) verify="" ;; esac
+          { echo "mode=${mode}"; echo "verify=${verify}"
+            echo "run=$([ -n "$mode" ] && echo true || echo false)"; } >> "$GITHUB_OUTPUT"
+          echo "plan: ${mode:-nothing} (verify ${verify:-none})"
+
       - name: Notify Telegram — Build Started
         if: github.event_name == 'workflow_dispatch'
         uses: shani8dev/shani-ci-commons/.github/actions/send-telegram@main
@@ -69,6 +90,7 @@ jobs:
             SHA: `${{ github.sha }}`
 
       - name: Free disk space
+        if: steps.plan.outputs.run == 'true'
         run: |
           sudo rm -rf \
             /usr/local/lib/android \
@@ -81,6 +103,7 @@ jobs:
           df -h /
 
       - name: Checkout shani-install-media
+        if: steps.plan.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
           repository: shani8dev/shani-install-media
@@ -90,9 +113,11 @@ jobs:
           persist-credentials: false
 
       - name: Make scripts executable
+        if: steps.plan.outputs.run == 'true'
         run: chmod +x shani-install-media/run_in_container.sh shani-install-media/build.sh
 
       - name: Setup MOK keys
+        if: steps.plan.outputs.run == 'true'
         # Secrets via env, not ${{ }} inside run: — inline expressions are
         # pasted into the script text before bash parses it.
         env:
@@ -107,6 +132,7 @@ jobs:
             > shani-install-media/keys/mok/MOK.der
 
       - name: Export GPG public key
+        if: steps.plan.outputs.run == 'true'
         run: |
           mkdir -p shani-install-media/keys/gpg
           TMPGNUPG="$(mktemp -d)"
@@ -119,27 +145,15 @@ jobs:
               > shani-install-media/keys/gpg/gpg-public.asc
           rm -rf "$TMPGNUPG"
 
-      - name: Full pipeline — ${{ matrix.profile }}
-        # On schedule, github.event.inputs.build_mode is '' (≠ full); the
-        # `github.event_name == 'schedule'` clause routes schedule runs here.
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.build_mode == 'full' }}
+      - name: Build and upload (${{ steps.plan.outputs.mode }}) — ${{ matrix.profile }}
+        if: steps.plan.outputs.run == 'true'
         working-directory: shani-install-media
-        run: sudo --preserve-env bash run_in_container.sh build.sh full -p "${{ matrix.profile }}"
+        run: sudo --preserve-env bash run_in_container.sh build.sh "${{ steps.plan.outputs.mode }}" -p "${{ matrix.profile }}"
 
-      - name: Build and upload — ${{ matrix.profile }}
-        if: ${{ github.event_name != 'schedule' && github.event.inputs.build_mode != 'full' }}
+      - name: Verify uploaded artifacts (${{ steps.plan.outputs.verify }}) — ${{ matrix.profile }}
+        if: steps.plan.outputs.run == 'true'
         working-directory: shani-install-media
-        run: sudo --preserve-env bash run_in_container.sh build.sh all -p "${{ matrix.profile }}"
-
-      - name: Verify uploaded artifacts — ${{ matrix.profile }}
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.build_mode == 'full' }}
-        working-directory: shani-install-media
-        run: sudo --preserve-env bash run_in_container.sh build.sh verify -p "${{ matrix.profile }}" all
-
-      - name: Verify uploaded artifact — ${{ matrix.profile }}
-        if: ${{ github.event_name != 'schedule' && github.event.inputs.build_mode != 'full' }}
-        working-directory: shani-install-media
-        run: sudo --preserve-env bash run_in_container.sh build.sh verify -p "${{ matrix.profile }}" image
+        run: sudo --preserve-env bash run_in_container.sh build.sh verify -p "${{ matrix.profile }}" "${{ steps.plan.outputs.verify }}"
 
       - name: Notify Telegram — Build Failed
         if: failure() && github.event_name == 'workflow_dispatch'
@@ -155,6 +169,7 @@ jobs:
             [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
       - name: Resolve R2 artifact URLs — ${{ matrix.profile }}
+        if: steps.plan.outputs.run == 'true'
         id: resolve
         # Emit the ISO plus its sidecars (torrent / asc / sha256) as
         # individually HEAD-verified links, so the success notification
@@ -204,7 +219,7 @@ jobs:
           verify "${ISO_DIR}/${ISO_NAME}.sha256"    sha256_url
 
       - name: Notify Telegram — Build Succeeded
-        if: success() && github.event_name == 'workflow_dispatch'
+        if: success() && github.event_name == 'workflow_dispatch' && steps.plan.outputs.run == 'true'
         uses: shani8dev/shani-ci-commons/.github/actions/send-telegram@main
         with:
           bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}

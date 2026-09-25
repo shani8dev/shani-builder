@@ -71,6 +71,20 @@ jobs:
           elif [ "$TASK" = image ]; then mode=all
           elif [ $(( 10#$(date -u +%V) % 2 )) -eq 0 ]; then mode=iso-release
           else mode=""; echo "::notice::odd ISO week $(date -u +%V) - no ISO build this week"; fi
+          # A published release is immutable: a second build on the same UTC
+          # date would be given the same name and overwrite it - including the
+          # image stable.txt points at (a manual build earlier that day and the
+          # scheduled one that night). Skip instead.
+          d=$(date -u +%Y%m%d); p="${{ matrix.profile }}"; base="https://downloads.shani.dev/${p}/${d}"
+          case "$mode" in
+            all|full) f="${base}/shanios-${d}-${p}.zst" ;;
+            iso-release) f="${base}/signed_shanios-${p}-${d:0:4}.${d:4:2}.${d:6:2}-x86_64.iso" ;;
+            *) f="" ;;
+          esac
+          if [ -n "$f" ] && curl -fsI --max-time 20 "$f" >/dev/null 2>&1; then
+            echo "::notice::${f##*/} is already published - not building it again today (releases are immutable)"
+            mode=""
+          fi
           case "$mode" in all) verify=image ;; full) verify=all ;; iso-release) verify=iso ;; *) verify="" ;; esac
           { echo "mode=${mode}"; echo "verify=${verify}"
             echo "run=$([ -n "$mode" ] && echo true || echo false)"; } >> "$GITHUB_OUTPUT"

@@ -69,6 +69,30 @@ re-confirm the build still succeeds and the resulting package's signature
 verifies against the test key — a secret-handling fix that breaks signing
 isn't an acceptable trade.
 
+## Release pipeline (how images reach users)
+
+- **`build.yaml` (Build and Package)** builds changed PKGBUILDs into
+  `shani-repo` - daily at 00:00 UTC or on dispatch, **not** on a
+  shani-pkgbuilds push. An image built before it runs ships the previous
+  package versions. A published version is never rebuilt: a missing `.sig`
+  fails the run (same filename, new bytes broke every cached copy once).
+- **`build-image.yml`**: matrix profile x task. Fridays: the base image
+  (`build.sh all`) every week; the ISO (`build.sh iso-release`, Flatpak/Snap
+  layers + an ISO around the gated `stable.txt` image) only in even ISO
+  weeks. Dispatch: `all` / `iso-release` / `full`. The notification links
+  what the run published.
+- **`promote-stable.yml`**: matrix profile x artifact (image, iso). Each job
+  runs shani-testbed's `gate --for=<artifact>` on the published candidate
+  and promotes only its own artifact from its own marker
+  (`promote-stable.sh --only=... --expect=...`); a scheduled job with
+  nothing new skips. `gate_only` dispatches test without promoting.
+- **The gate tests what users run**: installs from the ISO under OVMF with
+  its own installer, the self-updated shani-deploy, updates without
+  `--force`, rollbacks. A rollback runs the shani-deploy **inside the
+  image** (rollback returns before self-update), so a rollback bug is only
+  fixed for users by a new image - the gate refused 20260924 for exactly
+  that (its shani-deploy 86 overwrote the previous system on `-r`).
+
 ## Things that have bitten this repo specifically
 
 - Passing a secret as `-e VAR="$VAR"` to `docker run`/`podman run` puts

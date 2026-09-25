@@ -31,6 +31,8 @@ jobs:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      # read deploy key for private PKGBUILD sources (shani-fleet, shani-insights)
+      PKG_SOURCES_DEPLOY_KEY: ${{ secrets.PKG_SOURCES_DEPLOY_KEY }}
 
     steps:
       - name: Checkout repository

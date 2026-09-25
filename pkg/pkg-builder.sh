@@ -329,6 +329,16 @@ build_package() {
         echo "pgp_keys=${validpgpkeys[*]:-}"
     ' _ "${pkgbuild_dir}")"
 
+    # A git+ssh:// source is a private repo (shani-fleet, shani-insights):
+    # without the read deploy key there is nothing to build - skip it
+    # (return 2), rather than fail every run until the secret exists.
+    local ssh_source=0
+    grep -qE '^[^#]*git\+ssh://' "${pkgbuild_dir}/PKGBUILD" && ssh_source=1
+    if (( ssh_source )) && [[ -z "${PKG_SOURCES_DEPLOY_KEY:-}" ]]; then
+        log "SKIP ${pkgname}: private git+ssh source and no PKG_SOURCES_DEPLOY_KEY secret"
+        return 2
+    fi
+
     # makepkg builds only for the host CARCH — never arch[0] (brscan4's
     # arch=('i686' 'x86_64') would otherwise look for a -i686 artifact an
     # x86_64 host never produces). Mirrors makepkg's get_pkg_arch:
@@ -407,10 +417,21 @@ build_package() {
     # each value so a PKGBUILD directory name or package filename containing
     # a quote or shell metacharacter can't break out and run arbitrary code
     # with access to the imported GPG signing key.
+    local -a ssh_args=()
+    local deploy_key_file=""
+    if (( ssh_source )); then
+        deploy_key_file="$(mktemp)"
+        # shellcheck disable=SC2064  # expand now: the RETURN trap runs after locals are gone
+        trap "command -v shred &>/dev/null && shred -u '${deploy_key_file}' 2>/dev/null || rm -f '${deploy_key_file}'; command -v shred &>/dev/null && shred -u '${pkg_gpg_key_file}' 2>/dev/null || rm -f '${pkg_gpg_key_file}'" RETURN
+        printf '%s\n' "$PKG_SOURCES_DEPLOY_KEY" > "${deploy_key_file}"
+        chmod 600 "${deploy_key_file}"
+        ssh_args=(-v "${deploy_key_file}:/run/deploy_key:ro" -e WITH_DEPLOY_KEY=1)
+    fi
     BUILD_START_TIME="$(date +%s.%N)"
     docker run --rm \
         -v "$(pwd):/pkg" \
         -v "${pkg_gpg_key_file}:/home/builduser/.gnupg/temp-private.asc" \
+        "${ssh_args[@]}" \
         -e PKGBUILD_DIR="${pkgbuild_dir_clean}" \
         -e GPG_PASSPHRASE \
         -e PKG_FILE="${pkg_file}" \
@@ -423,6 +444,18 @@ build_package() {
 
             # builduser must own /pkg to write build artifacts.
             chown -R builduser:builduser /pkg
+
+            # Private sources: the deploy key for builduser, and GitHub'"'"'s
+            # published host key pinned (no trust-on-first-use).
+            if [ "${WITH_DEPLOY_KEY:-0}" = 1 ]; then
+                install -d -m700 -o builduser -g builduser /home/builduser/.ssh
+                install -m600 -o builduser -g builduser /run/deploy_key /home/builduser/.ssh/deploy_key
+                echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" \
+                    > /home/builduser/.ssh/known_hosts
+                printf "Host github.com\n  IdentityFile ~/.ssh/deploy_key\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n" \
+                    > /home/builduser/.ssh/config
+                chown builduser:builduser /home/builduser/.ssh/known_hosts /home/builduser/.ssh/config
+            fi
 
             # GPG refuses to run if ~/.gnupg is missing or not chmod 700.
             mkdir -p /home/builduser/.gnupg
@@ -686,6 +719,7 @@ cleanup_old_versions "${ARCH_DIR}"
 
 PACKAGES_NEEDING_DB_UPDATE=()
 FAILED_PACKAGES=()
+SKIPPED_PACKAGES=()
 
 # ---------------------------------------------------------------------------
 # Pre-pass: build in-tree dependencies first.
@@ -737,7 +771,10 @@ for pkgbuild_dir in shani-pkgbuilds/*/; do
         continue
     fi
 
-    if ! build_package "${pkgbuild_dir}"; then
+    rc=0; build_package "${pkgbuild_dir}" || rc=$?
+    if (( rc == 2 )); then
+        SKIPPED_PACKAGES+=("${pkgbuild_dir}")
+    elif (( rc != 0 )); then
         FAILED_PACKAGES+=("${pkgbuild_dir}")
         log "WARNING: build_package failed for ${pkgbuild_dir} — continuing with remaining packages."
     fi
@@ -752,6 +789,10 @@ fi
 
 commit_and_push "shani-repo" "Update package repository with new builds"
 mirror_releases "${ARCH_DIR}" "${BRANCH}"
+
+if [[ ${#SKIPPED_PACKAGES[@]} -gt 0 ]]; then
+    log "Skipped (private source, no deploy key): ${SKIPPED_PACKAGES[*]}"
+fi
 
 # Report failures and exit non-zero so CI marks the run as failed.
 if [[ ${#FAILED_PACKAGES[@]} -gt 0 ]]; then

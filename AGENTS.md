@@ -25,7 +25,7 @@ the rest.
 - `Things that have bitten this repo specifically`
 
 **On-demand reference — do not page through speculatively:**
-- `Audit-verified known issues (confirmed present)` — ~184 of this file's 354 lines
+- `Audit-verified known issues (confirmed present)` — ~107 lines
 - `Where things are documented`
 - `Garuda Cross-Reference Findings (added 2026-09-17)`
 

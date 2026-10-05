@@ -7,6 +7,10 @@ on:
     paths:
       - 'docker/**'
       - '.github/workflows/build-docker.yaml'
+  # Manual rebuild of the image on an unchanged Dockerfile. Without this,
+  # the only trigger is a push touching docker/**, so an on-demand rebuild
+  # needed a dummy commit to satisfy the path filter.
+  workflow_dispatch:
 
 # Cancel a queued build if a newer push arrives before it starts.
 # The running build is allowed to finish so we never push a half-built image.

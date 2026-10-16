@@ -68,10 +68,29 @@ cd "$PKGDIR"
 PKGNAME="${pkgname[0]:-${pkgname}}"
 
 # Determine the arch directory in shani-repo.
-if [[ "$pkg_arch" == "any" ]]; then
-    ARCH_DIR="/pkg/shani-repo/any"
-else
-    ARCH_DIR="/pkg/shani-repo/x86_64"
+#
+# This used to read `$pkg_arch`, which **no PKGBUILD defines** - the array a
+# PKGBUILD declares is `arch`, and `pkg_arch` is the name pkg-builder.sh gives
+# its own locally-derived copy. Under `set -euo pipefail` this died on the very
+# next line with "pkg_arch: unbound variable", so checkpkg had never compared
+# anything on any package, and because the caller keys its warning off this
+# script's exit status, *every* package in the repo drew the same
+# "checkpkg found differences or failed" warning. A warning that is always
+# printed is indistinguishable from one that is always wrong, which is how a
+# packaging check becomes decorative.
+#
+# The arch is taken from the artifact name instead of being re-derived: makepkg
+# has already applied get_pkg_arch's host-carch preference (an `arch=('i686'
+# 'x86_64')` PKGBUILD produces an x86_64 artifact on an x86_64 host), and
+# pkg-builder.sh computed PKG_FILE with that same rule. A second copy of it here
+# would be a weaker one, and would look in the wrong directory for any
+# multi-arch package.
+_pkg_arch="${PKGFILE##*-}"
+_pkg_arch="${_pkg_arch%.pkg.tar.zst}"
+ARCH_DIR="/pkg/shani-repo/${_pkg_arch}"
+if [[ ! -d "$ARCH_DIR" ]]; then
+    log "ERROR: no shani-repo directory for arch '${_pkg_arch}' (looked in ${ARCH_DIR})"
+    exit 1
 fi
 
 # The built package is in ARCH_DIR on the host, mounted at /pkg.
@@ -117,21 +136,46 @@ else
 fi
 
 # ── Compare sonames ────────────────────────────────────────────
+# `find-libprovides` is pacman's soname scanner, and it is **not in the builder
+# image this runs in** — measured there: `command -v find-libprovides` finds
+# nothing while `/usr/bin/pacman` is present. Under `set -euo pipefail` the bare
+# pipeline died on it with exit 127, which is a second, independent way this
+# check could never reach its verdict, on top of the unbound `pkg_arch` above.
+# Both had to be fixed before any of this compared anything.
+#
+# Skipping is not the same as passing. An absent scanner means soname drift is
+# UNCHECKED, and that is stated rather than folded into a clean bill of health:
+# "No soname differences" from a run that never scanned anything is a claim
+# about these packages that nobody made.
 log "Checking sonames..."
-find-libprovides "$PREV_PKG" 2>/dev/null | sort > /tmp/checkpkg-old-sonames
-find-libprovides "$BUILT_PKG" 2>/dev/null | sort > /tmp/checkpkg-new-sonames
-
-SONAME_DIFF="$(sdiff -s /tmp/checkpkg-old-sonames /tmp/checkpkg-new-sonames)" || true
-if [[ -n "$SONAME_DIFF" ]]; then
-    HAS_DIFFERENCES=true
-    echo "checkpkg: SONAME DIFFERENCES:"
-    echo "$SONAME_DIFF"
+if ! command -v find-libprovides >/dev/null 2>&1; then
+    log "SKIPPED: find-libprovides is not installed in this image — soname drift is unchecked."
 else
-    log "No soname differences."
+    find-libprovides "$PREV_PKG" 2>/dev/null | sort > /tmp/checkpkg-old-sonames
+    find-libprovides "$BUILT_PKG" 2>/dev/null | sort > /tmp/checkpkg-new-sonames
+
+    SONAME_DIFF="$(sdiff -s /tmp/checkpkg-old-sonames /tmp/checkpkg-new-sonames)" || true
+    if [[ -n "$SONAME_DIFF" ]]; then
+        HAS_DIFFERENCES=true
+        echo "checkpkg: SONAME DIFFERENCES:"
+        echo "$SONAME_DIFF"
+    else
+        log "No soname differences."
+    fi
 fi
 
 if [[ "$HAS_DIFFERENCES" == "true" ]]; then
+    # Non-zero, because otherwise this result is computed and thrown away: the
+    # caller prints its warning off the exit status, so a script that always
+    # exited 0 would report "checkpkg passed" for a package it just proved
+    # differs from the one it replaces.
+    #
+    # This does NOT block publishing. The artifact is already in the repo by the
+    # time this runs, and the caller is documented below to tolerate a non-zero
+    # here. Reporting is the whole job; gating is the release decision.
     log "checkpkg: Differences found for ${PKGFILE} — review before publishing."
+    exit 1
 else
     log "checkpkg: No differences for ${PKGFILE} — artifact verified."
+    exit 0
 fi

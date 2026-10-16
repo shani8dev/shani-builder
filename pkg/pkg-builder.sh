@@ -556,6 +556,15 @@ _run_checkpkg() {
         "${BUILDER_IMAGE}" bash /pkg/pkg/checkpkg.sh \
         && log "checkpkg passed for ${pkg_file}" \
         || warn "checkpkg found differences or failed for ${pkg_file} — review output above."
+    # checkpkg reports; it does not gate. Stated explicitly rather than left to
+    # inference, because the reason it is already non-fatal is incidental: the
+    # `|| warn ...` arm ends in `echo`, which returns 0, so the compound has
+    # always succeeded. Nothing was being aborted and nothing is being saved
+    # here — the `return 0` pins the contract so that someone giving `warn()`
+    # a meaningful exit status (a `return 1`, or `grep`-based reporting) does
+    # not silently start failing builds from a point AFTER the new package has
+    # already been moved into the repo, which is the worst place to stop.
+    return 0
 }
 
 # ---------------------------------------------------------------------------

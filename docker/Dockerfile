@@ -25,8 +25,32 @@ RUN pacman-key --init && \
         shim-signed sbsigntools mokutil mtools \
         zsync zsync2 rsync rclone openssh \
         flatpak systemd dbus squashfuse snapd \
+        qemu-base edk2-ovmf swtpm \
         mktorrent && \
     pacman -Scc --noconfirm
+
+# ── Why qemu-base / edk2-ovmf / swtpm are baked in rather than installed on demand ──
+# shani-testbed boots real UEFI firmware in this container: `iso-install` (the only
+# way to run a command against the image's OWN kernel, since systemd-nspawn shares
+# the host's), plus `qemu` and `gui`. All three need qemu-system-x86_64, the OVMF
+# firmware and a software TPM, and none of them were here.
+#
+# The absence failed in three different ways, none of them loud:
+#   * `iso-install` worked, but only because it runs `pacman -Sy` for the missing
+#     tools on every invocation. The builder container is `--rm`, so the install is
+#     thrown away each time: every run re-downloads and re-installs, and a run with
+#     no network fails at the last minute of a boot that takes minutes.
+#   * `qemu` and `gui` have no such preflight at all. `lib/qemu.sh` exits 1 and
+#     prints `apt install qemu-system-x86 ovmf   (Debian/Ubuntu)` — Debian
+#     instructions, on an Arch image, for a command that cannot work.
+#   * so a firmware-boot capability looked present (the commands exist, the docs
+#     describe them, `iso-install` is even documented with real transcripts) while
+#     being unreachable, and the only evidence was a missing binary.
+#
+# `qemu-base` depends on `qemu-img`, which the harness also needs: `vmspawn` boots
+# a qcow2 overlay backed by the image and (with `--commit`) writes the guest's
+# changes back with `qemu-img commit`. That path was previously only exercisable
+# from inside vmspawn's own throwaway container, which installs its own qemu.
 
 # ── Build user + GPG home + import Shani signing key as builduser ───────────
 # gpg --recv-key must run as builduser so the key lands in

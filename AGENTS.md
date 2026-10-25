@@ -231,6 +231,27 @@ rather than writing in a generic format.
 evidence behind every FIXED line below, see `AUDIT-HISTORY.md`.** This
 section is deliberately just the current-state summary.
 
+- **`shani-insights` and `shani-fleet` are publish-gap packages — SKIP is
+  their state, not a fault (still open, owner decision 2026-10-25).** Both
+  PKGBUILDs use a `git+ssh://` source, so `pkg-builder.sh` skips them
+  (`SKIP shani-insights/fleet: private git+ssh source and no
+  PKG_SOURCES_DEPLOY_KEY secret`, rc=2, by design so it cannot fail every
+  run) whenever `PKG_SOURCES_DEPLOY_KEY` is unset — and it has never been
+  set on this repo. Consequence, measured 2026-10-25 after repinning
+  shani-backup/cassini/deploy and dispatching `Build and Package` by hand:
+  the run exits green while neither package has EVER published —
+  `shani-insights` and `shani-fleet` are absent from `[shani]`
+  (`pacman -Si` returns nothing). The 2026-10-25 repins to
+  shani-insights (7aec6b7→a0f34a6) and shani-fleet therefore also do not
+  publish until this closes. The fix needs a key/permissions decision
+  (deliberately not taken for the owner): generate a dedicated read-only
+  deploy key, register it on shani8dev/{shani-fleet,shani-insights}, and
+  `gh secret set PKG_SOURCES_DEPLOY_KEY -R shani8dev/shani-builder` — the
+  workflow already threads the secret through to pkg-builder. Reusing
+  `SSH_PRIVATE_KEY` would work but puts the write-capable key into
+  another code path. Until then, treat these two as known-absent from
+  `[shani]`, not a build failure.
+
 - **Publish workflows: secrets interpolated inline into `run:`, unused
   `id-token: write`, persisted checkout credentials — FIXED (2026-09-23).**
   `build-image.yml` "Setup MOK keys" pasted `${{ secrets.MOK_KEY/CRT/DER }}`

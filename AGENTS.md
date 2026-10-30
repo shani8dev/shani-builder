@@ -244,8 +244,36 @@ section is deliberately just the current-state summary.
   in `tests/test-build-dependency-order.sh` (real extracted block, niri
   fixture incl. transitive chain + cycle), real-tree ordering correct,
   and the `file://` precedence measured in the real builder image
-  (local 0.1.0-60 beats remote 0.1.0-59 on a fresh `-Sy`). Full
-  narrative in `AUDIT-HISTORY.md`.
+  (local 0.1.0-60 beats remote 0.1.0-59 on a fresh `-Sy`). Confirmed
+  live in CI run 41006114011: deploy→cassini order measured, and
+  shani-desktop-niri — the exact build that used to fail — built last
+  and finished fine. Full narrative in `AUDIT-HISTORY.md`.
+- **rebuild_database()'s per-run key file died at per-build call rate —
+  FIXED (2026-10-30).** The same-run dep rebuild called it once per
+  successful build; the rebuild container's `chown -R` recursed into
+  the bind-mounted key file and chowned the HOST file, so every call
+  after the first failed `Permission denied` and the run exited 1
+  (5 rebuilds: 1 ok, 5 denied — the end-of-run one fatally). Fixed
+  with a fresh mktemp per CALL, shredding explicitly on every return
+  path (NOT a RETURN trap — that would overwrite build_package()'s
+  pending one); incremental-rebuild failure is a warning, the
+  end-of-run rebuild still publishes. Verified: all three suites green.
+- **checkpkg mapped `any`-arch artifacts to shani-repo/any — FIXED
+  (2026-10-30).** shani-repo has two layout dirs (x86_64, arm); its
+  first-ever live CI run printed that error for EVERY any-arch package.
+  `any` artifacts are arch-independent and live in the host arch
+  directory, so the mapping re-applies get_pkg_arch's routing (armv7l|
+  aarch64→arm — note `aarch64` does not glob-match `arm*`).
+  `tests/test-checkpkg-arch-dir.sh` 5/5 maps the real block against
+  any/native/aarch64/armv7l values; without this, a "checkpkg failed"
+  warning would print on most packages on every run — decorative
+  exactly as its own header warning describes.
+- **pkg-builder's build container synced dep DB with partial `-Sy` —
+  now `-Syu` (2026-10-30).** Mirrors make_pkg.sh's fix measured the
+  same day on the same defect class (aged image + rotated mirrors);
+  `pacman -Syu --noconfirm git` replaces `pacman -Sy --noconfirm git`
+  before every makepkg. The build that flipped this came with the
+  build-docker image rebuild (dispatched 2026-10-30, 2m04s green).
 
 - **`shani-insights` and `shani-fleet` are publish-gap packages — SKIP is
   their state, not a fault (still open, owner decision 2026-10-25).** Both

@@ -87,6 +87,25 @@ PKGNAME="${pkgname[0]:-${pkgname}}"
 # multi-arch package.
 _pkg_arch="${PKGFILE##*-}"
 _pkg_arch="${_pkg_arch%.pkg.tar.zst}"
+# An `any`-arch artifact (most of this repo: shani-deploy, shani-chronoa,
+# …) goes into the builder HOST's arch directory — `any` is the artifact
+# name's arch, not a repo layout directory — and shani-repo has exactly
+# two: x86_64 and arm. Deriving from the artifact name already mirrors
+# get_pkg_arch for native debs; for `any` the artifact is arch-independent
+# and pkg-builder.sh's own get_pkg_arch routes it to the host directory,
+# so re-apply that same routing here: CI hosts are x86_64, arm* covers the
+# arm layout. Found live 2026-10-30: on the first real CI run where
+# checkpkg ever executed, every any-arch package printed "no shani-repo
+# directory for arch 'any' (looked in /pkg/shani-repo/any)".
+if [[ "$_pkg_arch" == any ]]; then
+    _pkg_arch="$(uname -m)"
+    # matches pkg-builder.sh's get_pkg_arch layout: armv7l|aarch64 -> arm
+    # (aarch64 does NOT glob-match arm* — 'aa' vs 'ar' — so name it explicitly)
+    case "$_pkg_arch" in
+        armv7l|aarch64) _pkg_arch="arm" ;;
+        *)              _pkg_arch="x86_64" ;;
+    esac
+fi
 ARCH_DIR="/pkg/shani-repo/${_pkg_arch}"
 if [[ ! -d "$ARCH_DIR" ]]; then
     log "ERROR: no shani-repo directory for arch '${_pkg_arch}' (looked in ${ARCH_DIR})"

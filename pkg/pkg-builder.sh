@@ -72,37 +72,35 @@ SSH_DIR="$(mktemp -d /tmp/shani-ssh-XXXXXX)"
 readonly SSH_DIR
 
 # GPG key material is NEVER written to one shared, reused temp file —
-# each of build_package()'s (many, sequential) calls gets its own fresh
-# /tmp/shani-gpg-pkg-XXXXXX.asc (created and shredded inside the function,
-# via a RETURN trap), and rebuild_database() gets its own
-# DB_GPG_KEY_FILE below. Found live why a single shared file doesn't work:
+# every use (each build_package() call, each rebuild_database() call)
+# gets its own fresh /tmp/shani-gpg-{pkg,db}-XXXXXX.asc (created and
+# shredded inside the function, via a RETURN trap). Found live why a
+# single shared file doesn't work — twice, from opposite directions:
 # every container run's `chown -R builduser:builduser /home/builduser`
-# recurses into the bind-mounted key file (it's a real bind mount, so the
-# chown lands on the HOST file, not a container-local copy) — and reusing
-# that same file across many sequential container runs turned out to be
-# genuinely racy, not a one-time deterministic break: 25 of 28 builds in
-# one real run reused the old shared file fine, but 3 others failed with
-# "Permission denied" on the exact same write, and rebuild_database()
-# (running after all of them) failed the same way every time. A fresh,
-# never-before-touched-by-any-container file per use sidesteps the whole
-# class of issue rather than trying to pin down the exact race.
-DB_GPG_KEY_FILE="$(mktemp /tmp/shani-gpg-db-XXXXXX.asc)"
-readonly DB_GPG_KEY_FILE
-chmod 600 "${DB_GPG_KEY_FILE}"
+# recurses into the bind-mounted key file (it's a real bind mount, so
+# the chown lands on the HOST file, not a container-local copy); reusing
+# one file across 28 builds in an old run broke 3 of them racily, and
+# when rebuild_database() started being called once per successful build
+# (2026-10-30, for same-run dependency resolution) the FIRST rebuild's
+# container chowned the per-run DB_GPG_KEY_FILE into the container's
+# builduser uid, so every later call — including the end-of-run one —
+# failed with Permission denied on the exact same write, fatally ending
+# the run (log: run with 5 rebuilds, 1st ok,Permission denied x4 + 1).
+# A fresh, never-before-touched-by-any-container file per use sidesteps
+# the whole class rather than trying to pin down the exact uid mapping.
 
 # ---------------------------------------------------------------------------
 # Cleanup — always runs on exit, even on error
 # ---------------------------------------------------------------------------
 cleanup() {
+    # Catch-all for any per-use key file whose own RETURN-trap shred
+    # didn't run (e.g. the whole script was killed mid-build) — each
+    # build_package()/rebuild_database() call already shreds its own on
+    # every normal exit path, this is just a safety net.
     if command -v shred &>/dev/null; then
-        shred -u "${DB_GPG_KEY_FILE}" 2>/dev/null || rm -f "${DB_GPG_KEY_FILE}"
-        # Catch-all for any per-package key file whose own RETURN-trap
-        # shred didn't run (e.g. the whole script was killed mid-build) —
-        # each build_package() call already shreds its own on every normal
-        # exit path, this is just a safety net.
-        find /tmp -maxdepth 1 -name 'shani-gpg-pkg-*.asc' -exec shred -u {} \; 2>/dev/null || true
+        find /tmp -maxdepth 1 \( -name 'shani-gpg-pkg-*.asc' -o -name 'shani-gpg-db-*.asc' \) -exec shred -u {} \; 2>/dev/null || true
     else
-        rm -f "${DB_GPG_KEY_FILE}" /tmp/shani-gpg-pkg-*.asc
+        rm -f /tmp/shani-gpg-pkg-*.asc /tmp/shani-gpg-db-*.asc
     fi
     rm -rf "${SSH_DIR}"
 }
@@ -454,8 +452,15 @@ build_package() {
                 sed -i "/^\\[shani\\]/a Server = file:///pkg/shani-repo/${REPO_SUBDIR}" /etc/pacman.conf
             fi
 
-            # Refresh pacman db and ensure git is available for makepkg --syncdeps.
-            pacman -Sy --noconfirm git || { echo "pacman -Sy failed"; exit 1; }
+            # Full upgrade, not partial: the container starts from the image
+            # snapshot, and makepkg installs only the targets a build names.
+            # A partial -Sy has failed live twice on aged images (systemd and
+            # stale sysvcompat in build.yaml 37317352283; os-installer-git
+            # with gtk4 4.24.1 against the image glib2 2.88.3, meson dying at
+            # gio-2.0 >= 2.89.3). -Syu pairs the repo state like
+            # shani-pkgbuilds/make_pkg.sh does. git is here for makepkg
+            # --syncdeps to fetch VCS sources.
+            pacman -Syu --noconfirm git || { echo "pacman -Syu failed"; exit 1; }
 
             # builduser must own /pkg to write build artifacts.
             chown -R builduser:builduser /pkg
@@ -554,8 +559,13 @@ echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd
     # [shani] file:// server insertion in the container script above).
     # Without this, run 41002085320's shani-desktop-niri failed because
     # shani-shell was built later in the same run and existed nowhere
-    # pacman could see yet.
-    rebuild_database "${ARCH_DIR}"
+    # pacman could see yet. A failure here is a WARNING, not fatal: the
+    # end-of-run rebuild still signs and publishes everything — killing
+    # the run would abort up to 58 builds over a step the final rebuild
+    # covers anyway.
+    if ! rebuild_database "${ARCH_DIR}"; then
+        warn "Incremental db rebuild failed for ${ARCH_DIR} — same-run dependents may not see this package until the end-of-run rebuild."
+    fi
     _record_build_metric "$pkgname" "success" "$BUILD_START_TIME" "$BUILD_END_TIME" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
     return 0
 }
@@ -606,18 +616,33 @@ rebuild_database() {
         return 0
     fi
 
-    # Write GPG private key to its OWN dedicated temp file (DB_GPG_KEY_FILE,
-    # declared up top — see there for why this is never shared with
-    # build_package()'s own per-call files). Written here explicitly (not
-    # relying on a prior build_package() call having populated it this run)
-    # because rebuild_database() can still run even when every package
-    # this run was already built+signed and skipped.
-    printf '%s\n' "$GPG_PRIVATE_KEY" > "${DB_GPG_KEY_FILE}"
-    chmod 600 "${DB_GPG_KEY_FILE}"
+    # Write GPG private key to a FRESH temp file per CALL (never reuse the
+    # mounted file: the container's `chown -R builduser /home/builduser`
+    # recurses into the bind-mount and chowns the HOST file — with the old
+    # per-run DB_GPG_KEY_FILE this made every rebuild after the first fail
+    # with Permission denied; see the comment block at the top of this
+    # script). Not a RETURN-trap cleanup: this function is called from
+    # inside build_package() (same-run dep resolution), and setting a
+    # RETURN trap here would overwrite build_package()'s own pending trap
+    # — build_package's pkg-key shred would silently never run. Shred
+    # explicitly on every return path instead. Written here explicitly
+    # (not relying on build_package() having signed anything this run)
+    # because rebuild_database() must also work when every package was
+    # already built+signed and skipped.
+    local db_key_file
+    db_key_file="$(mktemp /tmp/shani-gpg-db-XXXXXX.asc)"
+    chmod 600 "${db_key_file}"
+    _shred_db_key() {
+        command -v shred &>/dev/null && shred -u "${db_key_file}" 2>/dev/null || rm -f "${db_key_file}"
+        # shellcheck disable=SC2317  # only reached via explicit call
+        return 0
+    }
+    printf '%s\n' "$GPG_PRIVATE_KEY" > "${db_key_file}"
+    chmod 600 "${db_key_file}"
 
     docker run --rm \
         -v "$(realpath "${arch_dir}"):/repo" \
-        -v "${DB_GPG_KEY_FILE}:/home/builduser/.gnupg/temp-private.asc" \
+        -v "${db_key_file}:/home/builduser/.gnupg/temp-private.asc" \
         -e GPG_PASSPHRASE \
         "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
@@ -641,7 +666,8 @@ cd /repo || exit 1
 # convention build_package() uses for individual package signatures.
 for f in shani.db.tar.gz shani.files.tar.gz; do
   echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"\${f}.sig\" \"\$f\" || { echo '"'"'GPG sign failed'"'"'; exit 1; }
-done"
+done
+"
             su --preserve-environment builduser -c "$inner"
 
             # repo-add creates shani.db/shani.files as symlinks — remove them
@@ -652,9 +678,15 @@ done"
             cp shani.files.tar.gz shani.files
             cp shani.db.tar.gz.sig shani.db.sig
             cp shani.files.tar.gz.sig shani.files.sig
-        '
+        ' || {
+            _shred_db_key
+            warn "rebuild_database: rebuild/sign container failed for ${arch_dir}"
+            return 1
+        }
+    _shred_db_key
 
     log "Database rebuilt and signed successfully."
+    return 0
 }
 
 # ---------------------------------------------------------------------------

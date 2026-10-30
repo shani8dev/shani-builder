@@ -251,6 +251,78 @@ inflate the main file back to unreadable length.
   Secret-handling invariants untouched: the only new `-e` on the docker
   run is a DIRNAME `-e REPO_SUBDIR="${ARCH_DIR##*/}"` (a path, no
   secret), asserted by test S5 (5/5 build-timeout suite also
-  re-verified green). PENDING: full-run confirmation on CI once this
-  lands alongside the `shani-pkgbuilds` bumps (previous fix sets were
-  confirmed by a real run; this one has not been dispatched yet).
+  re-verified green). Full-run confirmation arrived in CI run
+  41006114011 (the push-disabled-expected run): the ordering is now
+  measured live — shani-deploy (05:03:25) before shani-cassini
+  (05:03:45), and shani-desktop-niri built last (05:04:52 → "Finished
+  making" 05:06:40), i.e. THE EXACT `target not found: shani-shell`
+  failed build now succeeds, with shani-shell resolved through the
+  file:// [shani] server. That run then surfaced two bugs in the new
+  wiring itself, both root-caused from its log and fixed in the commits
+  that follow — see the two entries below (shared db key file;
+  checkpkg 'any' directory).
+- **rebuild_database()'s per-run key file broke under its NEW per-build
+  call rate — FIXED (2026-10-30, run 41006114011).** The same-run
+  dependency fix moved `rebuild_database()` into build_package()'s
+  success path, which multiplied its key file's exposure: DB_GPG_KEY_FILE
+  is a per-RUN mktemp (created once at script top), and rebuild_database
+  reused it across every call in a run. First call 05:03:05 succeeded;
+  from the second (05:03:40) onward, every printf into it died with
+  `Permission denied` — the rebuild container's
+  `chown -R builduser:builduser /home/builduser` recurses into the
+  bind-mounted temp-private.asc and chowns the HOST file, so the next
+  call's write (mode 600, owned by the container uid) is denied. 5
+  rebuild calls, 1 succeeded, 5 Permission denied, and the final
+  end-of-run rebuild failed fatally → run exit 1. This is the exact
+  chown-into-mount mechanism build_package() was already documented to
+  avoid ("A FRESH key file per call") — rebuild_database predated the
+  per-call rate and got spared until now. Fixed by mirroring
+  build_package()'s pattern exactly: fresh
+  /tmp/shani-gpg-db-XXXXXX.asc per CALL — but NOT via a RETURN trap,
+  because setting one inside rebuild_database() would overwrite
+  build_package()'s pending RETURN trap and silently drop its pkg-key
+  shred (the trap is a global, and rebuild_database now runs between
+  build_package's traps being set and consumed); the shred runs
+  explicitly on every return path instead (docker-run failure returns
+  1 with a warning after shredding), the preamble DB_GPG_KEY_FILE
+  mktemp is gone, and cleanup()'s catch-all find now sweeps both
+  name patterns. The build_package() call site treats an incremental
+  rebuild failure as a WARNING, not fatal: the end-of-run rebuild still
+  signs and publishes everything, and aborting over it would kill up to
+  58 successful builds. Verified: bash -n; all three test suites green
+  (14 + 5 + 5).
+- **checkpkg() looked for `any`-arch artifacts in shani-repo/any —
+  FIXED (2026-10-30, run 41006114011).** The "quarterly dead code"
+  checkpkg had never executed on CI until this run; its deploy-key
+  FIXED twins were its first live exposure, and every any-arch package
+  (most of this repo: shani-deploy, shani-chronoa, shani-desktop-niri
+  …) failed its check with `no shani-repo directory for arch 'any'
+  (looked in /pkg/shani-repo/any)` — shani-repo has exactly two layout
+  directories, x86_64 and arm (pkg-builder.sh's get_pkg_arch routes
+  armv7l|aarch64→arm, everything else→x86_64). The artifact name's
+  arch segment (`…-any`) is brief-lived truth, not a directory: any
+  artifact is arch-independent and lands in the host arch directory.
+  Fixed in pkg/checkpkg.sh by re-applying get_pkg_arch's routing when
+  the derived arch is `any` (name-based case match, because `aarch64`
+  does NOT glob-match `arm*` — 'aa' vs 'ar' — a trap that was itself
+  caught by the new test before landing). New
+  `tests/test-checkpkg-arch-dir.sh` (5/5) maps the real block against
+  any + native + aarch64 + armv7l host values. Consequence of leaving
+  it unfixed would have been a permanently-printed checkpkg warning on
+  any-arch packages, i.e. a decorative check exactly like the one its
+  own header comment warns against.
+- **makepkg DB sync was partial inside pkg-builder.sh's build
+  container — FULL `-Syu` (2026-10-30).** The -Syu fix that went into
+  shani-pkgbuilds/make_pkg.sh covered local builds only; CI's
+  pkg-builder.sh container still ran bare `pacman -Sy git` before each
+  makepkg, so CI failed os-installer-git with the same stale-image
+  gtk4/glib2 pairing measured locally earlier the same day (the
+  rebuild dispatched 2026-10-30 renewed the image, but the window
+  reopens whenever the image ages behind the mirrors again; also
+  pkg-builder's DB cache mount carries over package files). Now:
+  `pacman -Syu --noconfirm git` in the same slot, mirroring
+  make_pkg.sh. Recorded live in the run that FOLLOWED the
+  build-docker rebuild. Nested-payload hygiene: the comment contains
+  NO apostrophes — the container script is a single-quoted payload and
+  an unescaped apostrophe ends it early (a trap spelled out in the
+  validpgpkeys entry above); `bash -n` caught it immediately.

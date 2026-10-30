@@ -191,3 +191,66 @@ inflate the main file back to unreadable length.
   `shani-repo` now has real, signed artifacts for all three
   (`foo2zjs-nightly-20201127-2`, `game-devices-udev-1.0-1`,
   `shani-desktop-cosmic-1.0-6`).
+- **The "pre-pass" in-tree dependency builder discovered nothing and
+  built too little even when it did — FIXED (2026-10-30), root cause of
+  run 41002085320's `target not found: shani-shell`.** The CI run failed
+  building `shani-desktop-niri` with `error: target not found:
+  shani-shell` (failed job 123888582562) even though shani-shell is an
+  in-tree directory that the same run builds. The "pre-pass" that was
+  supposed to prevent exactly this had two defects, both reconstructed
+  live against the real log:
+  1. Its awk block-extraction (`^[[:space:]]*(depends|makedepends)=\( …
+     \)[[:space:]]*$`) ended the block at the first line terminating in
+     `)` — and a COMMENT line inside `depends=()` can terminate in `)`.
+     shani-desktop-niri has `# niri.service's drop-in starts it
+     (usr/lib/systemd/user/niri.service.d)`, so the extraction emitted
+     only `depends=(` + that comment, and zero dep tokens. The block
+     never knew the package HAD deps.
+  2. Even with working extraction, the loop took `break` after the first
+     dep it recognized — a package depending on two in-tree packages
+     could still reach the main loop with the second one unbuilt.
+  Replaced with a real topological ordering: every PKGBUILD directory is
+  SOURCED in a subshell (the same accepted-eval mechanism
+  `build_package()` uses for its metadata; comments and quoted
+  `"pkg>=1"` deps parse correctly) to pull depends+makedepends
+  (option suffixes stripped), the in-tree dep graph is closed
+  transitively, and a DFS post-order appends each directory after all
+  of its deps. Ordering alone is not sufficient for correctness: a dep
+  built LATER in the same run is not on repo.shani.dev yet, because the
+  db push happens once at the end. So `build_package()` (a) refreshes
+  the LOCAL shani-repo db right after every successful build
+  (`rebuild_database "${ARCH_DIR}"`, incremental — cheap, in addition to
+  the existing end-of-run call), and (b) the container's `[shani]`
+  pacman section gets `Server =
+  file:///pkg/shani-repo/${REPO_SUBDIR}` inserted immediately after
+  `[shani]` (servers are tried in listed order, so the freshly-updated
+  local checkout wins over the stale remote; if the local db is absent,
+  pacman falls through to the remote line untouched). Empirical
+  verification: (i) `bash tests/test-build-dependency-order.sh` — 14/14
+  green, behavioral cases run the REAL extracted ordering block against
+  a fixture reproducing both defects (a comment line ending in `)`, a
+  two-deep transitive chain, a makedepends-only edge, and a dependency
+  cycle that must terminate with a warning, not hang); one fixture
+  iteration caught a *test* bug worth recording: unquoted
+  `shani-input-fcitx5>=1` inside `depends=(…)` is a bash SYNTAX ERROR
+  (`>=` is a redirection) — real PKGBUILDs always quote versioned deps,
+  which is also why sourcing never mis-parses them. (ii) the same block
+  run against the REAL `shani-pkgbuilds/` tree orders `shani-deploy`
+  before `shani-cassini` (cassini depends on deploy) and
+  `shani-input-fcitx5` → `shani-shell` → `shani-desktop-niri` — the
+  exact chain the run failed on. (iii) the container-side resolution was
+  verified against the real builder image: inserted the same sed line
+  into `/etc/pacman.conf` with a scratch `file://` repo whose db held a
+  package version (0.1.0-60) NEWER than the published remote (0.1.0-59);
+  `pacman -Si shani-chronoa`, after a fresh `-Sy`, returned 0.1.0-60 —
+  the local file:// server was fetched FIRST and won. Scratch-db
+  signature errors seen in that session's first attempt are a scratch
+  artifact (db signed with a throwaway key absent from pacman's
+  keyring); production dbs are signed by `rebuild_database()` with the
+  repo key the image's keyring already verifies (q.v. its FIXED entry).
+  Secret-handling invariants untouched: the only new `-e` on the docker
+  run is a DIRNAME `-e REPO_SUBDIR="${ARCH_DIR##*/}"` (a path, no
+  secret), asserted by test S5 (5/5 build-timeout suite also
+  re-verified green). PENDING: full-run confirmation on CI once this
+  lands alongside the `shani-pkgbuilds` bumps (previous fix sets were
+  confirmed by a real run; this one has not been dispatched yet).

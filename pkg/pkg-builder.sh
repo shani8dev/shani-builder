@@ -436,8 +436,23 @@ build_package() {
         -e GPG_PASSPHRASE \
         -e PKG_FILE="${pkg_file}" \
         -e PGP_KEYS="${pgp_keys}" \
+        -e REPO_SUBDIR="${ARCH_DIR##*/}" \
         "${BUILDER_IMAGE}" bash -c '
             set -euo pipefail
+
+            # Point [shani] at the local clone of the repo database FIRST:
+            # a package built and repo-added earlier in THIS run exists only
+            # in the local shani-repo checkout, not on repo.shani.dev (the
+            # push happens once at the end), so without this a dependent
+            # package built later in the same run resolves its dependency
+            # against a db that predates it. Multiple Server lines in one
+            # section are tried in order; if the local shani.db is missing,
+            # pacman falls through to the remote server. pkg-builder.sh
+            # rebuilds the local db after every successful build (see
+            # rebuild_database below), so this is always fresh.
+            if [ -n "${REPO_SUBDIR:-}" ] && [ -f "/pkg/shani-repo/${REPO_SUBDIR}/shani.db" ]; then
+                sed -i "/^\\[shani\\]/a Server = file:///pkg/shani-repo/${REPO_SUBDIR}" /etc/pacman.conf
+            fi
 
             # Refresh pacman db and ensure git is available for makepkg --syncdeps.
             pacman -Sy --noconfirm git || { echo "pacman -Sy failed"; exit 1; }
@@ -533,6 +548,14 @@ echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd
     fi
 
     PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pkg_file}")
+    # Rebuild the LOCAL db now, not only at the end of the run: a package
+    # built LATER in this same run must resolve this one as its dependency,
+    # and its container reads the repo db from the local checkout (see the
+    # [shani] file:// server insertion in the container script above).
+    # Without this, run 41002085320's shani-desktop-niri failed because
+    # shani-shell was built later in the same run and existed nowhere
+    # pacman could see yet.
+    rebuild_database "${ARCH_DIR}"
     _record_build_metric "$pkgname" "success" "$BUILD_START_TIME" "$BUILD_END_TIME" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
     return 0
 }
@@ -731,50 +754,111 @@ FAILED_PACKAGES=()
 SKIPPED_PACKAGES=()
 
 # ---------------------------------------------------------------------------
-# Pre-pass: build in-tree dependencies first.
+# Build order: a real topological sort over in-tree dependencies.
 #
-# The main loop below walks shani-pkgbuilds/*/ alphabetically. A package
-# whose depends=() names another local package (e.g. shani-desktop-gamescope
-# depends on gamescope-session-plus) hits "target not found" if its
-# dependency hasn't been built yet — makepkg -sc can't resolve a package
-# that isn't in any repo. Verified live: shani-desktop-gamescope failed with
-# exactly that error while its dependency built later in the same run.
+# Replaces the previous "pre-pass" (2026-10-30 run 41002085320 failed with
+# `target not found: shani-shell` while building shani-desktop-niri). The
+# pre-pass had two defects, both verified live against the real run log:
 #
-# This scans every PKGBUILD's depends= for in-tree names and builds those
-# first. It's a single pass (not a full dependency graph) — enough for the
-# flat one-level local-dependency shape this repo has. A full topological
-# scheduler is master-roadmap item #5; this is the minimal fix for the
-# real failure mode.
+#   1. Its awk block-extraction stopped at the first line ending in `)` —
+#      which a *comment line* inside depends=() can end with
+#      (shani-desktop-niri has `# ... (usr/lib/systemd/user/niri.service.d)`),
+#      so the array was cut short and its in-tree deps were never
+#      discovered at all.
+#   2. Even when extraction worked it built only the FIRST in-tree dep of
+#      each package (`break` after the first), so a package depending on
+#      two in-tree packages could still reach the main loop unresolved.
+#
+# This scans every PKGBUILD by SOURCING it in a subshell (same mechanism
+# build_package uses for its metadata — comments, quoted strings and
+# multi-line arrays all parse correctly), builds the full in-tree dep graph
+# (depends + makedepends, option-tail `>=1.0`-style suffixes stripped) and
+# orders the build DFS-style — deps before dependents.
+#
+# Ordering alone is not enough: a dep built LATER in the same run is not on
+# repo.shani.dev yet when the dependent's container runs `pacman -Sy`. So
+# build_package() also updates the LOCAL clone's shani.db after every
+# successful build (rebuild_database below runs incrementally) and the
+# container is pointed at that local db FIRST — see the [shani] server
+# insertion inside build_package()'s container script.
 # ---------------------------------------------------------------------------
-log "Pre-pass: building in-tree dependencies before dependents..."
-for pkgbuild_dir in shani-pkgbuilds/*/; do
-    [[ -f "${pkgbuild_dir}/PKGBUILD" ]] || continue
-    # Extract the depends=(...) block (may span lines with comments) and
-    # keep only tokens naming an in-tree package directory.
-    # (No `local` here — this is a for-loop at script scope, not inside a
-    # function; `local` outside a function is a syntax error.)
-    # `|| true` is load-bearing: under `set -o pipefail`, `grep` exits 1
-    # when a PKGBUILD has no depends/makedepends tokens, and the `while`
-    # loop exits 1 when its last dep token isn't an in-tree dir. Both are
-    # valid "no in-tree deps" outcomes, so a non-zero pipeline must not
-    # abort the script via `set -e`.
-    in_tree_deps=$(awk 'BEGIN{b=0} /^[[:space:]]*(depends|makedepends)=\(/{b=1} b{print} /\)[[:space:]]*$/{if(b)b=0}' "${pkgbuild_dir}/PKGBUILD" 2>/dev/null \
-        | grep -oE '[a-z0-9][a-z0-9._-]*' \
-        | while read -r dep; do
-            [[ -d "shani-pkgbuilds/${dep}" && -f "shani-pkgbuilds/${dep}/PKGBUILD" ]] && echo "$dep"
-          done | sort -u) || true
-    for dep in $in_tree_deps; do
-        log "  $(basename "${pkgbuild_dir}"): depends on in-tree ${dep} — building first"
-        if ! build_package "shani-pkgbuilds/${dep}"; then
-            FAILED_PACKAGES+=("shani-pkgbuilds/${dep}")
-            warn "Pre-pass: failed to build in-tree dependency ${dep}"
-        fi
-        break
-    done
+
+# Every PKGBUILD directory once (basename = its primary package name).
+PKGBUILD_DIRS=()
+for _d in shani-pkgbuilds/*/; do
+    [[ -f "${_d}/PKGBUILD" ]] && PKGBUILD_DIRS+=("$(basename "$_d")")
 done
+unset _d
+
+# `_pkg_tree_deps DIR` - print the depends+makedepends entries of DIR's
+# PKGBUILD that name an in-tree package directory, one per line. Sourced in a
+# subshell (comments and multi-line arrays parse correctly — the awk-based
+# pre-pass this replaces choked on a comment line ending in `)`), option
+# suffixes (`>=1.0`) stripped to bare names. Never fails the caller: a
+# PKGBUILD that doesn't source yields no deps, and its nonzero exit is
+# ignored here (same residual eval risk as build_package's metadata
+# extraction, accepted and documented there).
+_pkg_tree_deps() {
+    local pkgbuild_dir="$1"
+    bash -c '
+        source "$1/PKGBUILD"
+        for arr_name in depends makedepends; do
+            if declare -p "$arr_name" 2>/dev/null | grep -q "declare -a"; then
+                eval "arr=(\"\${$arr_name[@]:-}\")"
+            else
+                eval "val=\"\${$arr_name:-}\""
+                if [[ -n "$val" ]]; then arr=("$val"); else arr=(); fi
+            fi
+            for dep in "${arr[@]:-}"; do
+                printf "%s\n" "${dep%%[<>=]*}"
+            done
+        done
+    ' _ "${pkgbuild_dir}" 2>/dev/null | sort -u | while IFS= read -r dep; do
+        [[ -d "shani-pkgbuilds/${dep}" && -f "shani-pkgbuilds/${dep}/PKGBUILD" ]] && printf "%s\n" "$dep"
+    done || true
+}
+
+log "Resolving in-tree dependencies from PKGBUILDs (sourced, not grepped)..."
+declare -A DEPS_OF=()
+for _dir in "${PKGBUILD_DIRS[@]}"; do
+    _deps=$( { _pkg_tree_deps "shani-pkgbuilds/${_dir}"; true; } )
+    DEPS_OF["$_dir"]="$_deps"
+done
+unset _dir _deps
+
+# DFS post-order: a directory is appended AFTER its in-tree deps, so deps of
+# every depth resolve before the package that needs them (the old single-pass
+# pre-pass only handled one level, and then only the first dep per package).
+declare -A _VISIT_DONE=()
+declare -A _VISITING=()
+BUILD_ORDER=()
+visit() {
+    local dir="$1" dep
+    [[ "${_VISIT_DONE[$dir]:-}" == "1" ]] && return 0
+    if [[ "${_VISITING[$dir]:-}" == "1" ]]; then
+        warn "In-tree dependency cycle involving ${dir} — cycle members build in directory order"
+        return 0
+    fi
+    _VISITING[$dir]=1
+    for dep in ${DEPS_OF[$dir]:-}; do
+        [[ "${_VISIT_DONE[$dep]:-}" == "1" ]] && continue
+        visit "$dep"
+    done
+    unset '_VISITING[$dir]'
+    _VISIT_DONE[$dir]=1
+    BUILD_ORDER+=("$dir")
+}
+
+for _dir in "${PKGBUILD_DIRS[@]}"; do
+    visit "$_dir"
+done
+unset _dir
+
+log "Build order (in-tree dependencies first): ${BUILD_ORDER[*]:-}"
 
 log "Building and signing packages..."
-for pkgbuild_dir in shani-pkgbuilds/*/; do
+for pkgdir in "${BUILD_ORDER[@]:-${PKGBUILD_DIRS[@]:-}}"; do
+    pkgbuild_dir="shani-pkgbuilds/${pkgdir}/"
     if [[ ! -f "${pkgbuild_dir}/PKGBUILD" ]]; then
         log "Skipping ${pkgbuild_dir} — no PKGBUILD found."
         continue

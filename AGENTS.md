@@ -231,6 +231,22 @@ rather than writing in a generic format.
 evidence behind every FIXED line below, see `AUDIT-HISTORY.md`.** This
 section is deliberately just the current-state summary.
 
+- **The "pre-pass" in-tree dependency builder was doubly broken — FIXED
+  (2026-10-30).** `target not found: shani-shell` while building
+  shani-desktop-niri in run 41002085320: the awk extraction died at the
+  first line ending in `)` (a *comment* line inside `depends=()` ends
+  the block), and even when it worked it built only the FIRST dep per
+  package (`break`). Replaced with a sourced-PKGBUILD topological DFS
+  over the full dep graph plus same-run dep availability: the local
+  shani-repo db is rebuilt after every successful build and the
+  container's `[shani]` section gets a `file://` server line inserted
+  ahead of the remote one (servers are tried in order). Verified: 14/14
+  in `tests/test-build-dependency-order.sh` (real extracted block, niri
+  fixture incl. transitive chain + cycle), real-tree ordering correct,
+  and the `file://` precedence measured in the real builder image
+  (local 0.1.0-60 beats remote 0.1.0-59 on a fresh `-Sy`). Full
+  narrative in `AUDIT-HISTORY.md`.
+
 - **`shani-insights` and `shani-fleet` are publish-gap packages — SKIP is
   their state, not a fault (still open, owner decision 2026-10-25).** Both
   PKGBUILDs use a `git+ssh://` source, so `pkg-builder.sh` skips them
@@ -441,7 +457,8 @@ Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap
 
 4. **checkpkg Equivalent** (P1, ~1 day) — Create `pkg/checkpkg.sh` to verify a package build produces a working artifact before publishing to `shani-repo`. Builds a temp copy, downloads the previous version from the repo, compares file lists and sonames (`bsdtar tf` + `sdiff`). Adapts `garuda-tools/bin/checkpkg.in`'s pattern to shani's `pkg-builder.sh` pipeline. Source: IMPLEMENTATION-ROADMAP.md #11.
 
-5. **Dependency-Aware Job Scheduling** (P2, ~1-2 weeks) — File-based queue at `/var/spool/shani-builder/queue.json` with a dependency graph parsed from PKGBUILD `depends=/makedepends=`. Captures ~30% of chaotic-manager's orchestration value at ~5% of the effort, using bash + jq only — no Redis, no TypeScript, no event bus. Source: IMPLEMENTATION-ROADMAP.md #14.
+5. **Dependency-Aware Job Scheduling** (P2, ~1-2 weeks, partially realized
+   2026-10-30) — File-based queue at `/var/spool/shani-builder/queue.json` with a dependency graph parsed from PKGBUILD `depends=/makedepends=`. Captures ~30% of chaotic-manager's orchestration value at ~5% of the effort, using bash + jq only — no Redis, no TypeScript, no event bus. **The graph-parsing half exists now**: `pkg/pkg-builder.sh` builds a sourced-PKGBUILD dep graph and orders the run DFS-style (see `AUDIT-HISTORY.md`, 2026-10-30 entry). What remains open is the queue/workers shape — run everything in one process order, queueing a rebuild of only changed subtrees. Source: IMPLEMENTATION-ROADMAP.md #14.
 
 6. **Shared CI Templates, Renovate, Conventional Commits** (P1, cross-repo) — Create `shani-ci-commons` with reusable GitHub Actions workflow templates (lint, test, build, security scan). Add fleet-wide Renovate for automated dependency updates and commitizen for conventional commit enforcement. These affect all 15 shani repos; this repo's CI workflows (`build-docker.yaml`, `build.yaml`, `build-image.yml`, `promote-stable.yml`) would be the first consumers. Source: IMPLEMENTATION-ROADMAP.md #7, #8, #9.
 

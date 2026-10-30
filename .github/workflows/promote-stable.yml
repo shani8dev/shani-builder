@@ -12,6 +12,7 @@ on:
           - gnome
           - plasma
           - cosmic
+          - niri
       artifact:
         description: 'What to gate and promote (the base image and the ISO are built and promoted separately)'
         required: true

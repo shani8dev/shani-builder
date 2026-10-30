@@ -10,11 +10,13 @@ on:
         options:
           # '' is intentional and required: default: '' ("all profiles") must
           # be one of the options for a workflow_dispatch choice input. The
-          # matrix below maps '' -> ['gnome', 'plasma'].
+          # matrix below maps '' -> ['gnome', 'plasma']; cosmic/niri stay
+          # manual-select like cosmic (schedule cost, see promote-stable.yml).
           - ''
           - gnome
           - plasma
           - cosmic
+          - niri
         default: ''
       build_mode:
         description: 'Build mode: all (base image + upload), iso-release (Flatpak/Snap + ISO around the STABLE image + upload iso) or full (everything at once, ISO from the new image). Scheduled: image weekly, iso-release every even ISO week.'

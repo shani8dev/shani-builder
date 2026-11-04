@@ -107,4 +107,8 @@ jobs:
         # Use an absolute path via $GITHUB_WORKSPACE so sudo can locate the
         # script regardless of how it resets $PWD, and invoke it with bash
         # explicitly to avoid any execute-bit or shebang-resolution issues.
-        run: sudo --preserve-env bash "$GITHUB_WORKSPACE/pkg/pkg-builder.sh"
+        # sudo-rs (Ubuntu 26 runners) ignores a bare --preserve-env and dropped
+        # every secret; it keeps the variables it is given by name - names
+        # only, so no value is ever in an argv (checked under sudo-rs 0.2.13
+        # with a /proc cmdline poll: 0 hits).
+        run: sudo --preserve-env="$(compgen -e | paste -sd,)" bash "$GITHUB_WORKSPACE/pkg/pkg-builder.sh"

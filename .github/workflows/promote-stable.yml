@@ -197,7 +197,7 @@ jobs:
           R2_BUCKET:            ${{ secrets.R2_BUCKET }}
         run: |
           tested="$(cat "test-env/disk/gate-${{ matrix.profile }}.image.passed")"
-          sudo --preserve-env bash run_in_container.sh build.sh promote-stable -p "${{ matrix.profile }}" \
+          sudo --preserve-env="$(compgen -e | paste -sd,)" bash run_in_container.sh build.sh promote-stable -p "${{ matrix.profile }}" \
             --only=image --expect="${tested}"
 
       - name: Promote the tested ISO — ${{ matrix.profile }}
@@ -211,7 +211,7 @@ jobs:
           R2_BUCKET:            ${{ secrets.R2_BUCKET }}
         run: |
           tested="$(cat "test-env/disk/gate-${{ matrix.profile }}.iso.passed")"
-          sudo --preserve-env bash run_in_container.sh build.sh promote-stable -p "${{ matrix.profile }}" \
+          sudo --preserve-env="$(compgen -e | paste -sd,)" bash run_in_container.sh build.sh promote-stable -p "${{ matrix.profile }}" \
             --only=iso --expect-iso="${tested}"
 
       - name: Notify Telegram — Promotion Failed

@@ -10,8 +10,9 @@ on:
         options:
           # '' is intentional and required: default: '' ("all profiles") must
           # be one of the options for a workflow_dispatch choice input. The
-          # matrix below maps '' -> ['gnome', 'plasma']; cosmic/niri stay
-          # manual-select like cosmic (schedule cost, see promote-stable.yml).
+          # matrix below maps '' -> ['niri']: niri is the AI desktop and the
+          # shipped default; gnome/plasma/cosmic stay manual-select
+          # (schedule cost, see promote-stable.yml).
           - ''
           - gnome
           - plasma
@@ -43,7 +44,7 @@ jobs:
     timeout-minutes: 360
     strategy:
       matrix:
-        profile: ${{ fromJson(github.event.inputs.profile != '' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
+        profile: ${{ fromJson(github.event.inputs.profile != '' && format('["{0}"]', github.event.inputs.profile) || '["niri"]') }}
         # image and ISO are separate artifacts: separate jobs, run in parallel
         task: ${{ github.event_name == 'schedule' && fromJson('["image", "iso"]') || fromJson(github.event.inputs.build_mode == 'iso-release' && '["iso"]' || '["image"]') }}
       fail-fast: false

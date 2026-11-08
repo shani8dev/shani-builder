@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       profile:
-        description: 'Profile to promote (all = gnome + plasma)'
+        description: 'Profile to promote (all = niri, the AI desktop)'
         required: true
         type: choice
         options:
@@ -53,7 +53,7 @@ jobs:
 
     strategy:
       matrix:
-        profile: ${{ github.event_name == 'schedule' && fromJson('["gnome", "plasma"]') || fromJson(github.event.inputs.profile != 'all' && format('["{0}"]', github.event.inputs.profile) || '["gnome", "plasma"]') }}
+        profile: ${{ github.event_name == 'schedule' && fromJson('["niri"]') || fromJson(github.event.inputs.profile != 'all' && format('["{0}"]', github.event.inputs.profile) || '["niri"]') }}
         artifact: ${{ (github.event_name == 'schedule' || github.event.inputs.artifact == 'all') && fromJson('["image", "iso"]') || fromJson(format('["{0}"]', github.event.inputs.artifact)) }}
       fail-fast: false
 

@@ -700,6 +700,31 @@ commit_and_push() {
 
     git -C "${repo_dir}" config --local user.name  "Shrinivas Kumbhar"
     git -C "${repo_dir}" config --local user.email "shrinivas.v.kumbhar@gmail.com"
+
+    # The package repo is a SNAPSHOT, not an archive. Old package versions
+    # accumulate in git history until the push exceeds GitHub's 2 GiB limit
+    # (measured: 5.5 GB after a few weeks of publishes). A package repo only
+    # ever needs the current files - the image build fetches the latest at
+    # build time, and the image itself is what gets published. So rebuild
+    # the history as a single orphan commit containing only the current tree,
+    # then force-push. This keeps the repo at snapshot size permanently.
+    if [[ "${repo_dir}" == *"shani-repo"* ]]; then
+        git -C "${repo_dir}" checkout --orphan _snapshot >/dev/null 2>&1 ||             git -C "${repo_dir}" checkout --orphan _snapshot
+        git -C "${repo_dir}" rm -rf . >/dev/null 2>&1 || true
+        git -C "${repo_dir}" add .
+        if git -C "${repo_dir}" diff --cached --quiet; then
+            log "No changes to commit."
+            git -C "${repo_dir}" checkout main >/dev/null 2>&1 || true
+            git -C "${repo_dir}" branch -D _snapshot >/dev/null 2>&1 || true
+            return 0
+        fi
+        git -C "${repo_dir}" commit -m "${commit_msg}"
+        git -C "${repo_dir}" branch -M _snapshot main
+        git -C "${repo_dir}" push origin main --force
+        log "Snapshot pushed successfully (history rewritten; repo kept at snapshot size)."
+        return 0
+    fi
+
     git -C "${repo_dir}" add .
 
     # --cached checks what is actually staged, not working-tree diffs.

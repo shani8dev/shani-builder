@@ -45,6 +45,10 @@ name: AI CI Failure Fixer
 #                        live here, but the actual build logic (and the
 #                        broadcom-wl-style bug this was built to catch)
 #                        lives in those other two repos.
+#                        If it is absent, the check job warns and skips
+#                        instead of failing: a missing optional integration
+#                        must not add a second red run on top of the build
+#                        failure that triggered it.
 #
 # Safety, deliberately: PR-only (never pushes to main), refuses to touch
 # .github/workflows/**, keys/**, secrets, or anything containing "secret"/
@@ -75,8 +79,13 @@ jobs:
           FAILED_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::CROSS_REPO_PAT is not set on shani8dev/shani-builder — the AI CI fixer cannot open PRs. Provision it (see this file's header comment)."
-            exit 1
+            # A missing optional integration must not turn every failed build
+            # into a second red run. Warn, skip this attempt, and leave the
+            # original failure as the only signal. Provision CROSS_REPO_PAT
+            # (see this file's header) to actually enable the fixer.
+            echo "::warning::CROSS_REPO_PAT is not set on shani8dev/shani-builder — skipping the AI CI fixer for this run. Provision it (see this file's header comment) to enable automatic fix PRs."
+            echo "should_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           BRANCH="ai/fix-ci-${FAILED_RUN_ID}"
           FOUND=false

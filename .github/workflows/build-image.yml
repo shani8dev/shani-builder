@@ -18,6 +18,7 @@ on:
           - plasma
           - cosmic
           - niri
+          - gamescope
         default: ''
       build_mode:
         description: 'Build mode: all (base image + upload), iso-release (Flatpak/Snap + ISO around the STABLE image + upload iso) or full (everything at once, ISO from the new image). Scheduled: image weekly, iso-release every even ISO week.'

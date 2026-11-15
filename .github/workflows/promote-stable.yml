@@ -13,6 +13,7 @@ on:
           - plasma
           - cosmic
           - niri
+          - gamescope
       artifact:
         description: 'What to gate and promote (the base image and the ISO are built and promoted separately)'
         required: true

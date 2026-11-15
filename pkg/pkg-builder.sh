@@ -710,8 +710,14 @@ commit_and_push() {
     # then force-push. This keeps the repo at snapshot size permanently.
     if [[ "${repo_dir}" == *"shani-repo"* ]]; then
         git -C "${repo_dir}" checkout --orphan _snapshot >/dev/null 2>&1 ||             git -C "${repo_dir}" checkout --orphan _snapshot
-        git -C "${repo_dir}" rm -rf . >/dev/null 2>&1 || true
-        git -C "${repo_dir}" add .
+        # Snapshot the whole working tree, including files that were already
+        # tracked in the clone. The old `git rm -rf .` deleted every tracked
+        # file — including the published .pkg.tar.zst packages — before
+        # `git add .` ran, so each publish committed only the untracked files
+        # that run had regenerated (the db) and dropped the packages, or the
+        # reverse on the next run. `git add -A` stages tracked, untracked and
+        # deleted paths without removing anything from the working tree.
+        git -C "${repo_dir}" add -A .
         if git -C "${repo_dir}" diff --cached --quiet; then
             log "No changes to commit."
             git -C "${repo_dir}" checkout main >/dev/null 2>&1 || true

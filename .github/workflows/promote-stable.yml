@@ -161,6 +161,28 @@ jobs:
             shani-install-media/test-env/shots/gate-*.png
           if-no-files-found: warn
 
+      # The gate fresh-installs into a 32G loop-mounted disk and leaves it
+      # (plus qemu overlays) behind. Promotion then needs several GB to fetch
+      # the image + sidecars from R2 for local validation. Without this cleanup
+      # curl dies with "(23) client returned ERROR on write" and promotion
+      # aborts (real failure, promote-stable niri image 2026-11-22, run
+      # 44967348298). Keep the gate markers — only free the bulky install
+      # images/overlays and unmount any loop still held.
+      - name: Reclaim gate disk space before promotion
+        if: ${{ !cancelled() && !inputs.gate_only && steps.new.outputs.run == 'true' }}
+        working-directory: shani-install-media
+        run: |
+          sudo bash -c '
+            for m in $(mount | grep -o "on /[^ ]*" | sed "s/^on //" | grep -E "shani|testbed|install" || true); do
+              umount -l "$m" 2>/dev/null || true
+            done
+            losetup -D 2>/dev/null || true
+            rm -rf test-env/disk/install-* test-env/disk/*-disk* test-env/disk/overlay* \
+                   test-env/disk/*.qcow2 test-env/disk/*.img test-env/disk/app-* 2>/dev/null || true
+            docker image prune -af >/dev/null 2>&1 || true
+          '
+          df -h /
+
       # The image and the ISO are promoted separately, each only if the gate
       # wrote its marker: a failing ISO must not hold back a tested image
       # (or the reverse). !cancelled() lets them run after the gate step

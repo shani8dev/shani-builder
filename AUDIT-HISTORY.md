@@ -11,6 +11,25 @@ inflate the main file back to unreadable length.
 
 ---
 
+- **`promote-stable.yml` ran out of runner disk after the gate — FIXED
+  (2026-11-22), root cause of run 44967348298's failed niri image promotion.**
+  The release gate fresh-installs a candidate into a 32G loop-mounted disk and
+  leaves it — plus qemu overlays, disk images and Docker layers — behind on the
+  runner. Promotion then needs several GB to fetch the image and its `.sha256`/
+  `.asc`/`.packages.txt` sidecars from R2 for `validate-image.sh`'s local byte
+  checks; with the disk full, `curl` died with `(23) client returned ERROR on
+  write` and the job aborted before publishing. Fixed by inserting a "Reclaim
+  gate disk space before promotion" step between the gate and the promote steps:
+  it lazily unmounts anything matching shani/testbed/install, detaches all loop
+  devices, removes the bulky `test-env/disk/` install images/overlays/qcow2
+  snapshots, prunes Docker images, and prints `df -h /`. Gate markers
+  (`gate-<profile>.{image,iso}.passed`) are deliberately kept — only the bulky
+  artifacts are freed. Consequence: a tested candidate is no longer blocked by
+  disk exhaustion from its own gate; without the step every promotion that
+  follows a gate on that runner fails at the R2 fetch. Same change set also
+  added `shani-pkgbuilds/` and `shani-repo/` to `.gitignore` — `pkg-builder.sh`
+  clones both as separate repos into the working tree, and their snapshots were
+  showing up as untracked noise.
 - **`rebuild_database()` never signed the package database — FIXED, root
   cause of `shani-repo`'s "unsigned package database" Critical finding.**
   Was: `pkg/pkg-builder.sh:372` ran bare `repo-add shani.db.tar.gz

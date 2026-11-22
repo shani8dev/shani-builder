@@ -169,6 +169,14 @@ Checks out `shani-install-media` and runs
 profile in the resolved matrix (the scheduled trigger always promotes
 `gnome` + `plasma`; manual dispatch honors the `profile` input).
 
+Between each profile's gate and its promote step, a **"Reclaim gate disk space
+before promotion"** step unmounts the gate's install disk, detaches loop devices,
+and removes its bulky `test-env/disk/` artifacts and Docker images (gate markers
+are kept). The gate leaves a 32G install disk behind, and without this cleanup
+the R2 fetch for local validation can exhaust the runner's disk — `curl` dies
+with error 23 and promotion aborts (seen on the niri image, run 44967348298,
+2026-11-22).
+
 ### Required secrets
 
 | Secret | Purpose |

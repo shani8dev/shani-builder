@@ -138,9 +138,10 @@ inflate the main file back to unreadable length.
   deliberate human follow-up, now with the concrete reason a "just scope
   sudoers" fix wouldn't actually work.
 - **iptables-nft.** `docker/Dockerfile:22` installs `iptables-nft`.
-- **CI status.** 4 CI workflows: `build-docker.yaml`, `build.yaml`,
-  `build-image.yml`, `promote-stable.yml` with concurrency groups and
-  timeouts (60/120/360/15 min).
+- **CI status.** 8 CI workflows: `build-docker.yaml`, `build.yaml`,
+  `build-image.yml`, `promote-stable.yml`, `ai-ci-fixer.yml`, `notify-telegram.yml`,
+  `metrics.yaml`, and `shani-pkgbuilds/.github/workflows/` with concurrency groups
+  and timeouts (30/60/120/240/360/5 min; `promote-stable.yml` = 240).
 - **`rebuild_database()` "Permission denied" on its GPG key temp file —
   FIXED, found live in a real CI run.** Triggered by a real production
   incident: a `git merge` of `shani-repo` had put a mismatched database

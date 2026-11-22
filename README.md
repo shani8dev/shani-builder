@@ -154,20 +154,20 @@ stable channel is a distinct action, not an automatic step after a build
 finishes. Runs on a schedule (Saturday 20:30 UTC — one day after
 `build-image.yml`'s Friday build) or via manual `workflow_dispatch`.
 
-Concurrency group: `promote-stable` (in-progress runs are not cancelled). Job timeout: 15 minutes.
+Concurrency group: `promote-stable` (in-progress runs are not cancelled). Job timeout: 240 minutes.
 
 ### `workflow_dispatch` inputs
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `profile` | _(required)_ | `all` (= gnome + plasma), `gnome`, `plasma`, or `cosmic` |
+| `profile` | _(required)_ | `all` (= niri), `niri`, `gnome`, `plasma`, `cosmic`, or `gamescope` |
 
 ### What it does
 
 Checks out `shani-install-media` and runs
 `run_in_container.sh build.sh promote-stable -p <profile>` for each
-profile in the resolved matrix (the scheduled trigger always promotes
-`gnome` + `plasma`; manual dispatch honors the `profile` input).
+profile in the resolved matrix (the scheduled trigger gates and promotes **niri**;
+manual dispatch honors the `profile` input).
 
 Between each profile's gate and its promote step, a **"Reclaim gate disk space
 before promotion"** step unmounts the gate's install disk, detaches loop devices,
@@ -186,10 +186,14 @@ with error 23 and promotion aborts (seen on the niri image, run 44967348298,
 | `R2_SECRET_ACCESS_KEY` | Cloudflare R2 secret access key |
 | `R2_ACCOUNT_ID` | Cloudflare account ID |
 | `R2_BUCKET` | R2 bucket name |
+| `GPG_PRIVATE_KEY` | Signing key (the public half is exported for `validate-image.sh`) |
+| `GPG_KEY_ID` | Which signing key to export |
+| `TELEGRAM_BOT_TOKEN` | Bot token for promotion status notifications |
+| `TELEGRAM_CHAT_ID` | Chat for promotion status notifications |
 
-Unlike `build-image.yml`, this workflow doesn't need the MOK/GPG signing
-secrets — it promotes an already-built, already-signed artifact rather
-than producing a new one.
+It needs the GPG signing key to verify the artifact, but not the MOK keys —
+it promotes an already-built, already-signed artifact rather than producing
+a new one.
 
 ---
 
@@ -262,7 +266,7 @@ Concurrency group: `pkg-build` (in-progress runs are not cancelled, preventing t
 | `R2_SECRET_ACCESS_KEY` | `build-image.yml` | Cloudflare R2 secret key _(optional)_ |
 | `R2_ACCOUNT_ID` | `build-image.yml` | Cloudflare account ID _(optional)_ |
 | `R2_BUCKET` | `build-image.yml` | R2 bucket name _(optional)_ |
-| `DISCORD_WEBHOOK` | `build-image.yml`, `promote-stable.yml` | Discord webhook URL for build/promotion status notifications _(optional — steps no-op if unset)_ |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | `build-image.yml`, `promote-stable.yml` | Telegram bot token and chat for build/promotion status notifications _(optional)_ |
 
 ---
 

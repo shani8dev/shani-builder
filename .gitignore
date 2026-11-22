@@ -7,3 +7,7 @@ Thumbs.db
 *.swo
 .vscode/
 .idea/
+
+# nested repo snapshots (kept as separate repos, not tracked here)
+shani-pkgbuilds/
+shani-repo/

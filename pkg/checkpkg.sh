@@ -65,7 +65,22 @@ cd "$PKGDIR"
 
 # Source PKGBUILD to get metadata (same approach as pkg-builder.sh).
 . ./PKGBUILD
-PKGNAME="${pkgname[0]:-${pkgname}}"
+
+# A split PKGBUILD declares several packages in one pkgname array. Pick the
+# one this artifact belongs to instead of always using pkgname[0] — otherwise
+# every split package is compared against the first package's previous
+# version (which can look like "no previous version found" and skip the check).
+PKGNAME=""
+for pn in "${pkgname[@]}"; do
+    if [[ "$PKGFILE" == "${pn}-"* ]]; then
+        PKGNAME="$pn"
+        break
+    fi
+done
+if [[ -z "$PKGNAME" ]]; then
+    log "ERROR: ${PKGFILE} matches no pkgname in PKGBUILD (${pkgname[*]})"
+    exit 1
+fi
 
 # Determine the arch directory in shani-repo.
 #

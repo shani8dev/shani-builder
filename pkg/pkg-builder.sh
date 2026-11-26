@@ -316,16 +316,24 @@ build_package() {
     # pkgbuild_dir is passed as a positional argument ($1), not interpolated
     # into the script string, so a directory name containing a quote can't
     # break out and inject commands that then get eval'd below.
-    local pkgname pkgver pkgrel epoch arch_list pgp_keys
+    local pkgver pkgrel epoch arch_list pgp_keys
+    # Split PKGBUILDs declare several packages in one pkgname array. Capture
+    # every name — a single-package PKGBUILD still yields exactly one.
+    local -a pkgnames=()
     eval "$(bash -c '
         source "$1/PKGBUILD"
-        echo "pkgname=${pkgname[0]:-${pkgname}}"
+        printf "pkgnames=()\n"
+        for pn in "${pkgname[@]}"; do printf "pkgnames+=(%q)\n" "$pn"; done
         echo "pkgver=${pkgver}"
         echo "pkgrel=${pkgrel}"
         echo "epoch=${epoch:-0}"
         echo "arch_list=(${arch[*]})"
         echo "pgp_keys=${validpgpkeys[*]:-}"
     ' _ "${pkgbuild_dir}")"
+    if (( ${#pkgnames[@]} == 0 )); then
+        log "Error: PKGBUILD ${pkgbuild_dir} declares no pkgname" >&2
+        return 1
+    fi
 
     # A git+ssh:// source is a private repo (shani-fleet, shani-insights):
     # without the read deploy key there is nothing to build - skip it
@@ -333,7 +341,7 @@ build_package() {
     local ssh_source=0
     grep -qE '^[^#]*git\+ssh://' "${pkgbuild_dir}/PKGBUILD" && ssh_source=1
     if (( ssh_source )) && [[ -z "${PKG_SOURCES_DEPLOY_KEY:-}" ]]; then
-        log "SKIP ${pkgname}: private git+ssh source and no PKG_SOURCES_DEPLOY_KEY secret"
+        log "SKIP ${pkgnames[*]}: private git+ssh source and no PKG_SOURCES_DEPLOY_KEY secret"
         return 2
     fi
 
@@ -359,10 +367,16 @@ build_package() {
         ver="${epoch}:${pkgver}"
     fi
 
-    local pkg_file="${pkgname}-${ver}-${pkgrel}-${pkg_arch}.pkg.tar.zst"
-    local pkg_sig="${pkg_file}.sig"
+    # makepkg builds every package in a split PKGBUILD, so derive one artifact
+    # per pkgname. pkgver/pkgrel/epoch/arch are shared across the split package.
+    local -a pkg_files=() pkg_sigs=()
+    local pf
+    for pf in "${pkgnames[@]}"; do
+        pkg_files+=("${pf}-${ver}-${pkgrel}-${pkg_arch}.pkg.tar.zst")
+    done
+    for pf in "${pkg_files[@]}"; do pkg_sigs+=("${pf}.sig"); done
 
-    # Skip if this exact versioned artifact (and its signature) is already
+    # Skip if each exact versioned artifact (and its signature) is already
     # published. pkgver/pkgrel are embedded in pkg_file, so any version bump
     # yields a new filename and forces a rebuild; only an unchanged package
     # (same version) is skipped. No content hashing: editing a package
@@ -373,19 +387,29 @@ build_package() {
     # package (checksum)" - shani-repo has files re-committed 12-17 times
     # under one name from 2026-09-19. Re-sign the existing file, or bump
     # pkgrel.
-    if [[ -f "${ARCH_DIR}/${pkg_file}" && ! -f "${ARCH_DIR}/${pkg_sig}" ]]; then
-        warn "${pkg_file} is published without ${pkg_sig} - refusing to rebuild the same version (re-sign it, or bump pkgrel)"
-        _record_build_metric "$pkgname" "unsignedPublished" "$(date +%s.%N)" "$(date +%s.%N)" "published without signature" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
-        return 1
-    fi
-    if [[ -f "${ARCH_DIR}/${pkg_file}" && -f "${ARCH_DIR}/${pkg_sig}" ]]; then
-        log "Package ${pkg_file} already published — skipping build."
-        _record_build_metric "$pkgname" "alreadyBuilt" "$(date +%s.%N)" "$(date +%s.%N)" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
-        PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pkg_file}")
+    local all_published=true
+    local i ps
+    for i in "${!pkg_files[@]}"; do
+        pf="${pkg_files[$i]}"
+        ps="${pkg_sigs[$i]}"
+        if [[ -f "${ARCH_DIR}/${pf}" && ! -f "${ARCH_DIR}/${ps}" ]]; then
+            warn "${pf} is published without ${ps} - refusing to rebuild the same version (re-sign it, or bump pkgrel)"
+            _record_build_metric "${pkgnames[$i]}" "unsignedPublished" "$(date +%s.%N)" "$(date +%s.%N)" "published without signature" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
+            return 1
+        fi
+        if [[ -f "${ARCH_DIR}/${pf}" && -f "${ARCH_DIR}/${ps}" ]]; then
+            log "Package ${pf} already published — skipping build."
+            _record_build_metric "${pkgnames[$i]}" "alreadyBuilt" "$(date +%s.%N)" "$(date +%s.%N)" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
+            PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pf}")
+        else
+            all_published=false
+        fi
+    done
+    if [[ "$all_published" == "true" ]]; then
         return 0
     fi
 
-    log "Building: ${pkgname} ${ver}-${pkgrel}"
+    log "Building: ${pkgnames[*]} ${ver}-${pkgrel}"
 
     # A FRESH key file per call, not the old shared GPG_KEY_FILE — found
     # live that reusing one file bind-mounted into many sequential docker
@@ -432,7 +456,6 @@ build_package() {
         "${ssh_args[@]}" \
         -e PKGBUILD_DIR="${pkgbuild_dir_clean}" \
         -e GPG_PASSPHRASE \
-        -e PKG_FILE="${pkg_file}" \
         -e PGP_KEYS="${pgp_keys}" \
         -e REPO_SUBDIR="${ARCH_DIR##*/}" \
         "${BUILDER_IMAGE}" bash -c '
@@ -483,7 +506,6 @@ build_package() {
             chmod 700 /home/builduser/.gnupg
 
             q_dir=$(printf %q "$PKGBUILD_DIR")
-            q_file=$(printf %q "$PKG_FILE")
 
             # GPG_PASSPHRASE is deliberately NOT expanded here (\$ is escaped
             # below) — it stays as the literal text "$GPG_PASSPHRASE" in the
@@ -509,7 +531,11 @@ cd /pkg/$q_dir || { echo '"'"'cd failed'"'"'; exit 1; }
 timeout "\${BUILD_TIMEOUT:-3600}" makepkg -sc --noconfirm || { rc=\$?; if [ "\$rc" -eq 124 ]; then echo \"makepkg timed out after \${BUILD_TIMEOUT:-3600}s (set BUILD_TIMEOUT)\" >&2; else echo \"makepkg failed (exit \$rc)\" >&2; fi; exit 1; }
 
 # Sign — binary detached sig, NO --armor (pacman rejects ASCII sigs).
-echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output ${q_file}.sig $q_file || { echo '"'"'GPG sign failed'"'"'; exit 1; }"
+# makepkg produced one artifact per pkgname in a split PKGBUILD; sign each.
+for f in ./*.pkg.tar.zst; do
+  [ -e "\$f" ] || continue
+  echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 --detach-sign --output \"\${f}.sig\" \"\$f\" || { echo '"'"'GPG sign failed'"'"'; exit 1; }
+done"
 
             # --preserve-environment (no "-"/login option, which would reset
             # the environment) carries GPG_PASSPHRASE from this process'"'"'
@@ -519,40 +545,61 @@ echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd
         ' || {
         BUILD_RC=$?
         BUILD_END_TIME="$(date +%s.%N)"
-        if [[ "$BUILD_RC" -eq 124 ]]; then
-            _record_build_metric "$pkgname" "timeout" "$BUILD_START_TIME" "$BUILD_END_TIME" "makepkg timed out after ${BUILD_TIMEOUT:-3600}s" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
-        else
-            _record_build_metric "$pkgname" "failed" "$BUILD_START_TIME" "$BUILD_END_TIME" "makepkg failed (exit $BUILD_RC)" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
-        fi
+        # makepkg builds every name in the split PKGBUILD, so a failure (or a
+        # timeout) belongs to each of them, not just pkgname[0].
+        for pn in "${pkgnames[@]}"; do
+            if [[ "$BUILD_RC" -eq 124 ]]; then
+                _record_build_metric "$pn" "timeout" "$BUILD_START_TIME" "$BUILD_END_TIME" "makepkg timed out after ${BUILD_TIMEOUT:-3600}s" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
+            else
+                _record_build_metric "$pn" "failed" "$BUILD_START_TIME" "$BUILD_END_TIME" "makepkg failed (exit $BUILD_RC)" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
+            fi
+        done
         return 1
     }
     BUILD_END_TIME="$(date +%s.%N)"
 
-    # Move built artifacts into the public repo directory.
-    local built=false
-    for artifact in "${pkg_file}" "${pkg_sig}"; do
-        if [[ -f "${pkgbuild_dir_clean}/${artifact}" ]]; then
-            mv "${pkgbuild_dir_clean}/${artifact}" "${ARCH_DIR}/"
-            built=true
-        else
-            log "Warning: expected artifact not found: ${pkgbuild_dir_clean}/${artifact}"
+    # Move built artifacts into the public repo directory. Artifacts already
+    # published above keep their published bytes — never republish a version.
+    local -a built_files=() built_names=()
+    local artifact artifact_ok
+    for i in "${!pkg_files[@]}"; do
+        pf="${pkg_files[$i]}"
+        ps="${pkg_sigs[$i]}"
+        if [[ -f "${ARCH_DIR}/${pf}" && -f "${ARCH_DIR}/${ps}" ]]; then
+            continue
+        fi
+        artifact_ok=false
+        for artifact in "${pf}" "${ps}"; do
+            if [[ -f "${pkgbuild_dir_clean}/${artifact}" ]]; then
+                mv "${pkgbuild_dir_clean}/${artifact}" "${ARCH_DIR}/"
+                artifact_ok=true
+            else
+                log "Warning: expected artifact not found: ${pkgbuild_dir_clean}/${artifact}"
+            fi
+        done
+        if [[ "$artifact_ok" == "true" ]]; then
+            built_files+=("${pf}")
+            built_names+=("${pkgnames[$i]}")
         fi
     done
 
-    # Post-build verification: compare against previous version.
-    if [[ "$built" == "true" ]]; then
-        _run_checkpkg "${pkgbuild_dir_clean}" "${pkg_file}"
-    fi
+    # Post-build verification: compare each built package against its previous
+    # version (checkpkg picks the right pkgname from the artifact filename).
+    for pf in "${built_files[@]}"; do
+        _run_checkpkg "${pkgbuild_dir_clean}" "${pf}"
+    done
 
     # Clean up makepkg work directories.
     rm -rf "${pkgbuild_dir_clean}/pkg" "${pkgbuild_dir_clean}/src"
 
-    if [[ "$built" == false ]]; then
-        log "Error: no artifacts produced for ${pkgname}" >&2
+    if [[ ${#built_files[@]} -eq 0 ]]; then
+        log "Error: no artifacts produced for ${pkgnames[*]}" >&2
         return 1
     fi
 
-    PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pkg_file}")
+    for pf in "${built_files[@]}"; do
+        PACKAGES_NEEDING_DB_UPDATE+=("${ARCH_DIR}/${pf}")
+    done
     # Rebuild the LOCAL db now, not only at the end of the run: a package
     # built LATER in this same run must resolve this one as its dependency,
     # and its container reads the repo db from the local checkout (see the
@@ -566,7 +613,9 @@ echo \"\$GPG_PASSPHRASE\" | gpg --batch --pinentry-mode loopback --passphrase-fd
     if ! rebuild_database "${ARCH_DIR}"; then
         warn "Incremental db rebuild failed for ${ARCH_DIR} — same-run dependents may not see this package until the end-of-run rebuild."
     fi
-    _record_build_metric "$pkgname" "success" "$BUILD_START_TIME" "$BUILD_END_TIME" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
+    for pn in "${built_names[@]}"; do
+        _record_build_metric "$pn" "success" "$BUILD_START_TIME" "$BUILD_END_TIME" "" "$(git -C shani-pkgbuilds rev-parse HEAD 2>/dev/null || echo '')"
+    done
     return 0
 }
 
